@@ -14,7 +14,9 @@ Acrobat und Co. brauchen gefühlt ewig zum Starten. FlinkPDF ist eine native Win
 - Klickbare Links und Inhaltsverzeichnisse
 - Seitensprung (Seitenzahl einfach eintippen), Vollbild (F11), Drucken (Strg+P)
 - Passwortgeschützte PDFs
-- Heller und dunkler Modus passend zu Windows
+- Modernes Windows-11-Design: Mica-Hintergrund, Werkzeugleiste in der Titelleiste, Systemakzentfarbe
+- Heller und dunkler Modus (automatisch oder fest), Nachtmodus für Seiten
+- Einstellungen (Strg+,): Scrollrichtung horizontal/vertikal umkehren, Scrollgeschwindigkeit, sanftes Scrollen, Zoom beim Öffnen, Leseposition merken
 - „Zuletzt geöffnet“, Drag & Drop
 - Ein-Klick-Installation nach `%LOCALAPPDATA%\Programs` (ohne Adminrechte) inkl. Startmenü-Eintrag, Registrierung als PDF-App und Deinstallation über die Windows-Einstellungen
 
@@ -38,6 +40,7 @@ Kommandozeile: `FlinkPDF.exe --install`, `--uninstall`, `--register`, `--unregis
 | Strg+P | Drucken |
 | F11 | Vollbild |
 | Strg+W | Fenster schließen |
+| Strg+, | Einstellungen |
 
 ## Selbst bauen
 

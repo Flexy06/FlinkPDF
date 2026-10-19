@@ -40,15 +40,21 @@
 #define WM_APP_SEARCH (WM_APP + 2)
 #define WM_APP_TOAST (WM_APP + 3)
 
-enum { TIMER_ANIM = 1, TIMER_ZOOM = 2, TIMER_SEARCH = 3, TIMER_TOAST = 4, TIMER_CARET = 5 };
+enum { TIMER_ANIM = 1, TIMER_ZOOM = 2, TIMER_SEARCH = 3, TIMER_TOAST = 4, TIMER_CARET = 5, TIMER_PANEL = 6 };
 
 enum Cmd {
     CMD_NONE = 0, CMD_OPEN, CMD_PREV, CMD_NEXT, CMD_PAGEBOX, CMD_ZOOMOUT, CMD_ZOOMIN, CMD_ZOOMBOX, CMD_FIT,
     CMD_SEARCH, CMD_PRINT, CMD_MENU, CMD_SETDEFAULT, CMD_SEARCHFIELD, CMD_SEARCH_PREV, CMD_SEARCH_NEXT,
-    CMD_SEARCH_CLOSE, CMD_PWFIELD, CMD_PWOK, CMD_PWCANCEL,
+    CMD_SEARCH_CLOSE, CMD_PWFIELD, CMD_PWOK, CMD_PWCANCEL, CMD_SETTINGS,
     CMD_RECENT = 100,  // + Index
+    // Einstellungen
+    CMD_SET_PANEL = 200, CMD_SET_CLOSE, CMD_SET_MICA, CMD_SET_NIGHT, CMD_SET_SMOOTH, CMD_SET_INVH, CMD_SET_INVV,
+    CMD_SET_REMEMBER, CMD_SET_CLEARRECENT, CMD_SET_UNREG, CMD_SET_DIM,
+    CMD_SET_THEME = 230,  // + 0..2
+    CMD_SET_SPEED = 240,  // + 0..2
+    CMD_SET_OPEN = 250,   // + 0..2
     // Menübefehle
-    MNU_DEFAULT = 1000, MNU_FULLSCREEN, MNU_LOCATION, MNU_UNREGISTER, MNU_ABOUT, MNU_OPENWITH,
+    MNU_DEFAULT = 1000, MNU_FULLSCREEN, MNU_LOCATION, MNU_UNREGISTER, MNU_ABOUT, MNU_OPENWITH, MNU_SETTINGS,
     MNU_ZOOM = 1100,  // + Prozent
     MNU_FITWIDTH = 1099, MNU_FITPAGE = 1098,
 };
@@ -58,6 +64,7 @@ enum Field { FLD_NONE, FLD_PAGE, FLD_SEARCH, FLD_PASSWORD };
 
 static const float GAP = 14.0f;     // Abstand zwischen Seiten (DIP)
 static const float TOOLBAR = 48.0f;  // Höhe der Werkzeugleiste (DIP)
+static const float PANEL_W = 380.0f;  // Breite des Einstellungs-Panels
 static const float SB_W = 14.0f;     // Breite der Scrollbar-Zone
 static const double kZoomSteps[] = {0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25,
                                     1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0};
@@ -98,6 +105,7 @@ struct Job {
     float scale = 0;
     int w = 0, h = 0;
     bool links = false;
+    bool night = false;
 };
 
 struct RenderResult {
@@ -107,6 +115,7 @@ struct RenderResult {
     std::vector<unsigned char> px;
     bool hasLinks = false;
     std::vector<LinkInfo> links;
+    bool night = false;
 };
 
 struct SearchHit {
@@ -124,6 +133,42 @@ struct Zone {
     D2D1_RECT_F r;
     int cmd;
     const wchar_t* tip;
+};
+
+// Einstellungen (in HKCU\Software\FlinkPDF gespeichert)
+struct Settings {
+    int theme = 0;           // 0 = wie Windows, 1 = hell, 2 = dunkel
+    bool mica = true;        // Windows 11: Mica + integrierte Titelleiste
+    bool night = false;      // Seiten dunkel darstellen
+    bool smooth = true;      // sanftes Scrollen
+    int speed = 1;           // 0 langsam, 1 normal, 2 schnell
+    bool invH = false;       // horizontale Scrollrichtung umkehren
+    bool invV = false;       // vertikale Scrollrichtung umkehren
+    int openZoom = 0;        // 0 = zuletzt verwendet, 1 = Seitenbreite, 2 = ganze Seite
+    bool remember = true;    // Leseposition je Datei merken
+
+    void Load() {
+        theme = (int)std::min<DWORD>(2, sys::ReadDw(L"Theme", 0));
+        mica = sys::ReadDw(L"Mica", 1) != 0;
+        night = sys::ReadDw(L"Night", 0) != 0;
+        smooth = sys::ReadDw(L"Smooth", 1) != 0;
+        speed = (int)std::min<DWORD>(2, sys::ReadDw(L"Speed", 1));
+        invH = sys::ReadDw(L"InvertH", 0) != 0;
+        invV = sys::ReadDw(L"InvertV", 0) != 0;
+        openZoom = (int)std::min<DWORD>(2, sys::ReadDw(L"OpenZoom", 0));
+        remember = sys::ReadDw(L"Remember", 1) != 0;
+    }
+    void Save() const {
+        sys::WriteDw(L"Theme", theme);
+        sys::WriteDw(L"Mica", mica);
+        sys::WriteDw(L"Night", night);
+        sys::WriteDw(L"Smooth", smooth);
+        sys::WriteDw(L"Speed", speed);
+        sys::WriteDw(L"InvertH", invH);
+        sys::WriteDw(L"InvertV", invV);
+        sys::WriteDw(L"OpenZoom", openZoom);
+        sys::WriteDw(L"Remember", remember);
+    }
 };
 
 // ============================================================================
@@ -169,7 +214,8 @@ static ID2D1HwndRenderTarget* g_rt;
 static ID2D1SolidColorBrush* g_br;
 static ID2D1LinearGradientBrush* g_grad;
 static ID2D1PathGeometry *g_logoPage, *g_logoFold, *g_logoBolt;
-static IDWriteTextFormat *fUi, *fUiC, *fUiR, *fUiEll, *fBold, *fSmall, *fSmallC, *fIcon, *fIconBig, *fTitle;
+static IDWriteTextFormat *fUi, *fUiC, *fUiR, *fUiEll, *fBold, *fSmall, *fSmallC, *fIcon, *fIconBig, *fTitle, *fHead, *fSection,
+    *fSeg;
 static UINT32 g_maxBmp = 8192;
 
 // Dokument
@@ -224,6 +270,18 @@ static bool g_pwWrong = false;
 // Sonstiges
 static std::vector<std::wstring> g_recent;
 static std::wstring g_toast;
+
+// Einstellungen & Fensterrahmen
+static Settings S;
+static bool g_isWin11 = false;
+static bool g_customFrame = false;   // Mica + Werkzeugleiste in der Titelleiste
+static float g_captionLeft = 1e9f;   // linke Kante der System-Fensterknöpfe (Client-DIP)
+static bool g_panelOpen = false;     // Einstellungs-Panel
+static float g_panelT = 0;           // Animation 0..1
+static bool g_panelWant = false;     // Ziel der Animation (offen/zu)
+static LARGE_INTEGER g_panelLast;
+static float g_panelScroll = 0, g_panelContentH = 0;
+static const size_t kRecentMax = 30;   // gespeichert (für Lesepositionen); angezeigt werden max. 8
 
 template <class T> static void SafeRelease(T*& p) {
     if (p) { p->Release(); p = nullptr; }
@@ -308,7 +366,7 @@ class Worker {
             std::lock_guard<std::mutex> lk(mx);
             jobs.clear();
             for (auto& j : v) {
-                if (j.page == inflight.page && j.gen == inflight.gen && j.scale == inflight.scale) continue;
+                if (j.page == inflight.page && j.gen == inflight.gen && j.scale == inflight.scale && j.night == inflight.night) continue;
                 jobs.push_back(j);
             }
         }
@@ -362,7 +420,7 @@ class Worker {
     }
 
     void Render(const Job& job) {
-        RenderResult* res = new RenderResult{job.gen, job.page, job.scale, job.w, job.h, {}, false, {}};
+        RenderResult* res = new RenderResult{job.gen, job.page, job.scale, job.w, job.h, {}, false, {}, job.night};
         try {
             res->px.resize((size_t)job.w * job.h * 4);
         } catch (...) {
@@ -378,6 +436,22 @@ class Worker {
                 P.BitmapFillRect(b, 0, 0, job.w, job.h, 0xFFFFFFFF);
                 if (pg) P.RenderPageBitmap(b, pg, 0, 0, job.w, job.h, 0, pdf::F_ANNOT);
                 P.BitmapDestroy(b);
+            }
+            if (job.night) {
+                // Nachtmodus: Helligkeit invertieren (Weiß -> Dunkelgrau, Schwarz -> Hellgrau), per Tabelle
+                static unsigned char lut[256];
+                static bool lutInit = false;
+                if (!lutInit) {
+                    for (int v = 0; v < 256; v++) lut[v] = (unsigned char)(0xE4 - v * (0xE4 - 0x1E) / 255);
+                    lutInit = true;
+                }
+                unsigned char* d = res->px.data();
+                size_t n = res->px.size();
+                for (size_t k = 0; k < n; k += 4) {
+                    d[k] = lut[d[k]];
+                    d[k + 1] = lut[d[k + 1]];
+                    d[k + 2] = lut[d[k + 2]];
+                }
             }
             if (pg && job.links) {
                 pdf::SIZEF sz{612, 792};
@@ -545,6 +619,7 @@ static void UpdateJobs() {
         j.w = std::max(1, (int)std::lround(p.w * sc));
         j.h = std::max(1, (int)std::lround(p.h * sc));
         j.links = !p.linksLoaded;
+        j.night = S.night;
         jobs.push_back(j);
     }
     g_worker.SetJobs(jobs);
@@ -608,7 +683,7 @@ static void GoToPage(int i, float yNorm = -1) {
     i = std::clamp(i, 0, N() - 1);
     double t = PageTop(i) - GAP;
     if (yNorm >= 0) t = PageTop(i) + yNorm * g_pages[i].h * K() - 24;
-    bool anim = std::fabs(t - g_sy) < ViewH() * 2.5;
+    bool anim = S.smooth && std::fabs(t - g_sy) < ViewH() * 2.5;
     ScrollTo(g_sx, t, anim);
 }
 
@@ -674,7 +749,27 @@ static void ReleaseBitmaps() {
     for (auto& p : g_pages) { SafeRelease(p.bmp); p.bmpScale = 0; }
 }
 
+static const wchar_t* kPosKey = L"Software\\FlinkPDF\\Positions";
+struct SavedPos {
+    int page;
+    float frac;
+};
+
+static void SavePosition() {
+    if (!g_hasDoc || !S.remember || g_path.empty()) return;
+    int i = PageAtDocY(g_sy);
+    SavedPos v{i, (float)((g_sy - PageTop(i)) / std::max(1.0, g_pages[i].h * K()))};
+    RegSetKeyValueW(HKEY_CURRENT_USER, kPosKey, g_path.c_str(), REG_BINARY, &v, sizeof v);
+}
+
+static bool LoadPosition(const std::wstring& path, SavedPos& v) {
+    DWORD sz = sizeof v;
+    return RegGetValueW(HKEY_CURRENT_USER, kPosKey, path.c_str(), RRF_RT_REG_BINARY, nullptr, &v, &sz) == ERROR_SUCCESS &&
+           sz == sizeof v;
+}
+
 static void CloseDocument() {
+    SavePosition();
     g_worker.SetJobs({});
     g_worker.StopSearch();
     {
@@ -701,7 +796,10 @@ static void AddRecent(const std::wstring& path) {
                                   [&](const std::wstring& s) { return _wcsicmp(s.c_str(), path.c_str()) == 0; }),
                    g_recent.end());
     g_recent.insert(g_recent.begin(), path);
-    if (g_recent.size() > 8) g_recent.resize(8);
+    while (g_recent.size() > kRecentMax) {
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, kPosKey, g_recent.back().c_str());
+        g_recent.pop_back();
+    }
     sys::SaveRecent(g_recent);
 }
 
@@ -797,9 +895,16 @@ static bool OpenDocument(const std::wstring& pathIn, const std::wstring* passwor
     UpdateClientSize();
     StopAnim();
     g_sx = g_sy = g_tx = g_ty = 0;
+    if (S.openZoom == 1) g_zoomMode = ZM_WIDTH;
+    else if (S.openZoom == 2) g_zoomMode = ZM_PAGE;
     g_zoom = g_zoomMode == ZM_CUSTOM ? sys::ReadDw(L"Zoom", 100) / 100.0 : FitZoom(g_zoomMode);
     g_zoom = std::clamp(g_zoom, 0.1, 6.0);
     g_sx = g_tx = MaxSX() / 2;
+    SavedPos pos;
+    if (S.remember && LoadPosition(path, pos) && pos.page >= 0 && pos.page < N()) {
+        g_sy = g_ty = PageTop(pos.page) + std::clamp(pos.frac, -0.2f, 1.0f) * g_pages[pos.page].h * K();
+        ClampScroll();
+    }
     std::wstring title = sys::FileOf(path) + L" – FlinkPDF";
     SetWindowTextW(g_hwnd, title.c_str());
     AddRecent(path);
@@ -868,7 +973,7 @@ static void RevealHit(int idx) {
     double pageLeft = (ContentW() - p.w * K()) / 2;
     double l = pageLeft + r.left * p.w * K(), rr = pageLeft + r.right * p.w * K();
     if (l < g_sx || rr > g_sx + ViewW()) tx = l - ViewW() * 0.3;
-    ScrollTo(tx, ty, std::fabs(ty - g_sy) < ViewH() * 3);
+    ScrollTo(tx, ty, S.smooth && std::fabs(ty - g_sy) < ViewH() * 3);
 }
 
 static void NextHit(int dir) {
@@ -1031,6 +1136,9 @@ static void CreateDeviceIndependent() {
     fIcon = MkFmt(icon, 15.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
     fIconBig = MkFmt(icon, 18.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
     fTitle = MkFmt(disp, 30.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER);
+    fHead = MkFmt(disp, 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
+    fSection = MkFmt(ui, 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
+    fSeg = MkFmt(ui, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
     // Logo (100×100-Box)
     g_logoPage = Poly({{29, 17}, {59, 17}, {74, 32}, {74, 83}, {29, 83}});
     g_logoFold = Poly({{59, 17}, {74, 32}, {59, 32}});
@@ -1049,6 +1157,7 @@ static bool EnsureRT() {
     RECT rc;
     GetClientRect(g_hwnd, &rc);
     D2D1_RENDER_TARGET_PROPERTIES rp = D2D1::RenderTargetProperties();
+    rp.pixelFormat = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED);  // für Mica-Transparenz
     rp.dpiX = rp.dpiY = g_dpi;
     D2D1_HWND_RENDER_TARGET_PROPERTIES hp =
         D2D1::HwndRenderTargetProperties(g_hwnd, D2D1::SizeU(std::max<LONG>(1, rc.right), std::max<LONG>(1, rc.bottom)));
@@ -1157,17 +1266,18 @@ static void DrawField(const D2D1_RECT_F& r, const std::wstring& text, const wcha
 
 static void DrawToolbar() {
     float W = g_cw, H = TOOLBAR;
-    Fill(D2D1::RectF(0, 0, W, H), T.bar);
-    Fill(D2D1::RectF(0, H - 1, W, H), T.barLine);
+    if (!g_customFrame) Fill(D2D1::RectF(0, 0, W, H), T.bar);
+    Fill(D2D1::RectF(0, H - 1, W, H), T.barLine, g_customFrame ? 0.7f : 1.0f);
     const float bt = 6, bb = 42, bw = 36;
 
     IconBtn(D2D1::RectF(8, bt, 8 + bw, bb), CMD_OPEN, 0xE8E5, L"Öffnen (Strg+O)");
     float leftEnd = 8 + bw + 8;
 
     // Rechte Gruppe (von rechts nach links)
-    float x = W - 8;
+    float x = std::min(W - 8, g_captionLeft - 10);  // Platz für die System-Fensterknöpfe (Mica-Modus)
     auto place = [&](float w) { x -= w; return D2D1::RectF(x, bt, x + w, bb); };
     IconBtn(place(bw), CMD_MENU, 0xE712, L"Weitere Optionen");
+    IconBtn(place(bw), CMD_SETTINGS, 0xE713, L"Einstellungen (Strg+,)", true, g_panelOpen);
     x -= 2;
     if (!g_hasDoc) {
         Text(L"FlinkPDF", fUiEll, D2D1::RectF(leftEnd, 0, x - 8, H), T.text);
@@ -1274,7 +1384,7 @@ static void DrawPages() {
             }
             g_rt->DrawBitmap(p.bmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
         } else {
-            Fill(r, 0xFFFFFF);
+            Fill(r, S.night ? 0x1E1E1E : 0xFFFFFF);
         }
         // Suchtreffer
         if (!g_hits.empty()) {
@@ -1373,7 +1483,7 @@ static void DrawPassword() {
 
 static void DrawEmpty() {
     float cx = g_cw / 2;
-    int nRecent = (int)g_recent.size();
+    int nRecent = std::min<int>(8, (int)g_recent.size());
     bool showDefault = !g_isDefault;
     float blockH = 96 + 18 + 40 + 26 + 28 + 40 + (showDefault ? 50 : 0);
     float avail = ViewH() - 48;
@@ -1423,17 +1533,177 @@ static void DrawToast() {
     Text(g_toast, fUiC, r, T.toastText);
 }
 
+// ---------------------------------------------------------------------------
+//  Einstellungs-Panel
+// ---------------------------------------------------------------------------
+static float PanelEase() { float t = 1 - g_panelT; return 1 - t * t * t; }
+static float PanelLeft() { return g_cw - std::min(PANEL_W, g_cw) + (1 - PanelEase()) * 36; }
+
+static void Toggle(float x, float cy, bool on, int cmd, bool enabled) {
+    D2D1_RECT_F r = D2D1::RectF(x, cy - 10, x + 40, cy + 10);
+    float a = enabled ? 1.0f : 0.4f;
+    if (enabled) AddZone(D2D1::RectF(x - 6, cy - 16, x + 46, cy + 16), cmd, nullptr);
+    if (on) {
+        FillR(r, 10, T.accent, a);
+    } else {
+        FillR(r, 10, T.field, a);
+        StrokeR(r, 10, T.dim, 0.9f * a, 1);
+    }
+    if (enabled && g_hot == cmd) FillR(r, 10, on ? 0x000000 : T.text, 0.08f);
+    float kx = on ? x + 30 : x + 10, rad = (g_pressed == cmd) ? 7.5f : 6.0f;
+    SetC(on ? T.accentText : T.dim, a);
+    g_rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(kx, cy), rad, rad), g_br);
+}
+
+static void Segmented(const D2D1_RECT_F& r, std::initializer_list<const wchar_t*> opts, int sel, int cmdBase) {
+    FillR(r, 6, T.field);
+    StrokeR(r, 6, T.cardLine);
+    float w = (r.right - r.left - 4) / (float)opts.size();
+    int i = 0;
+    for (const wchar_t* o : opts) {
+        D2D1_RECT_F sr = D2D1::RectF(r.left + 2 + i * w, r.top + 2, r.left + 2 + (i + 1) * w, r.bottom - 2);
+        AddZone(sr, cmdBase + i, nullptr);
+        if (i == sel) {
+            FillR(sr, 5, T.accent);
+            Text(o, fSeg, sr, T.accentText);
+        } else {
+            if (g_hot == cmdBase + i) FillR(sr, 5, T.text, g_pressed == cmdBase + i ? T.press : T.hover);
+            Text(o, fSeg, sr, T.text);
+        }
+        i++;
+    }
+}
+
+static void SmallButton(const D2D1_RECT_F& r, int cmd, const wchar_t* label, bool enabled = true) {
+    if (enabled) AddZone(r, cmd, nullptr);
+    FillR(r, 5, T.field, enabled ? 1.0f : 0.5f);
+    if (enabled && g_hot == cmd) FillR(r, 5, T.text, g_pressed == cmd ? T.press : T.hover);
+    StrokeR(r, 5, T.cardLine);
+    Text(label, fSeg, r, T.text, enabled ? 1.0f : 0.4f);
+}
+
+static void DrawSettings() {
+    float e = PanelEase();
+    float top = TB(), H = g_ch;
+    // abgedunkelter Hintergrund – Klick schließt das Panel
+    Fill(D2D1::RectF(0, top, g_cw, H), 0x000000, 0.28f * e);
+    AddZone(D2D1::RectF(0, top, g_cw, H), CMD_SET_DIM, nullptr);
+    float L = PanelLeft(), R = L + std::min(PANEL_W, g_cw);
+    D2D1_RECT_F panel = D2D1::RectF(L, top, R, H);
+    for (int k = 1; k <= 6; k++) Fill(D2D1::RectF(L - k * 2.0f, top, L, H), 0x000000, 0.035f * e);
+    Fill(panel, T.card, e);
+    Fill(D2D1::RectF(L, top, L + 1, H), T.cardLine, e);
+    AddZone(panel, CMD_SET_PANEL, nullptr);
+    g_rt->PushAxisAlignedClip(panel, D2D1_ANTIALIAS_MODE_ALIASED);
+
+    const float x0 = L + 24, x1 = R - 24;
+    float y = top + 18 - g_panelScroll;
+    Text(L"Einstellungen", fHead, D2D1::RectF(x0, y, x1 - 40, y + 36), T.text);
+    IconBtn(D2D1::RectF(x1 - 34, y + 1, x1 + 2, y + 35), CMD_SET_CLOSE, 0xE711, L"Schließen (Esc)");
+    y += 52;
+
+    auto section = [&](const wchar_t* name) {
+        Text(name, fSection, D2D1::RectF(x0, y, x1, y + 20), T.accent);
+        y += 28;
+    };
+    auto divider = [&]() {
+        y += 8;
+        Fill(D2D1::RectF(x0, y, x1, y + 1), T.cardLine);
+        y += 18;
+    };
+    // Zeile mit Schalter; desc optional
+    auto toggleRow = [&](const wchar_t* label, const wchar_t* desc, bool on, int cmd, bool enabled = true) {
+        float h = desc ? 48.0f : 36.0f;
+        float tr = x1 - 52;
+        Text(label, fUi, D2D1::RectF(x0, y, tr, y + (desc ? 26 : h)), T.text, enabled ? 1.0f : 0.5f);
+        if (desc) Text(desc, fSmall, D2D1::RectF(x0, y + 24, tr, y + 44), T.dim);
+        Toggle(x1 - 40, y + h / 2, on, cmd, enabled);
+        y += h + 6;
+    };
+    auto segRow = [&](const wchar_t* label, std::initializer_list<const wchar_t*> opts, int sel, int base) {
+        Text(label, fUi, D2D1::RectF(x0, y, x1, y + 22), T.text);
+        y += 28;
+        Segmented(D2D1::RectF(x0, y, x1, y + 34), opts, sel, base);
+        y += 34 + 14;
+    };
+    auto buttonRow = [&](const wchar_t* label, const wchar_t* desc, const wchar_t* btn, int cmd, bool enabled) {
+        float h = desc ? 48.0f : 36.0f;
+        float bw = Measure(btn, fSeg) + 28;
+        Text(label, fUi, D2D1::RectF(x0, y, x1 - bw - 12, y + (desc ? 26 : h)), T.text);
+        if (desc) Text(desc, fSmall, D2D1::RectF(x0, y + 24, x1 - bw - 12, y + 44), T.dim);
+        SmallButton(D2D1::RectF(x1 - bw, y + h / 2 - 15, x1, y + h / 2 + 15), cmd, btn, enabled);
+        y += h + 6;
+    };
+
+    section(L"DARSTELLUNG");
+    segRow(L"Farbschema", {L"Wie Windows", L"Hell", L"Dunkel"}, S.theme, CMD_SET_THEME);
+    toggleRow(L"Mica & integrierte Titelleiste", g_isWin11 ? L"Moderner Fensterstil von Windows 11" : L"Nur unter Windows 11 verfügbar",
+              S.mica && g_isWin11, CMD_SET_MICA, g_isWin11);
+    toggleRow(L"Nachtmodus für Seiten", L"Stellt PDF-Seiten dunkel dar", S.night, CMD_SET_NIGHT);
+    divider();
+    section(L"SCROLLEN");
+    toggleRow(L"Sanftes Scrollen", nullptr, S.smooth, CMD_SET_SMOOTH);
+    segRow(L"Scrollgeschwindigkeit", {L"Langsam", L"Normal", L"Schnell"}, S.speed, CMD_SET_SPEED);
+    toggleRow(L"Horizontal umkehren", L"Richtung links/rechts tauschen", S.invH, CMD_SET_INVH);
+    toggleRow(L"Vertikal umkehren", L"Richtung oben/unten tauschen", S.invV, CMD_SET_INVV);
+    divider();
+    section(L"DOKUMENTE");
+    segRow(L"Zoom beim Öffnen", {L"Zuletzt", L"Seitenbreite", L"Ganze Seite"}, S.openZoom, CMD_SET_OPEN);
+    toggleRow(L"Leseposition merken", L"Öffnet Dateien an der letzten Stelle", S.remember, CMD_SET_REMEMBER);
+    buttonRow(L"Verlauf", L"„Zuletzt geöffnet“ und Positionen", L"Leeren", CMD_SET_CLEARRECENT, !g_recent.empty());
+    divider();
+    section(L"WINDOWS");
+    if (g_isDefault) {
+        Text(L"Standard-App für PDFs", fUi, D2D1::RectF(x0, y, x1 - 90, y + 36), T.text);
+        wchar_t ok[2] = {0xE73E, 0};
+        Text(ok, fIcon, D2D1::RectF(x1 - 80, y, x1 - 58, y + 36), T.accent);
+        Text(L"Aktiv", fUiR, D2D1::RectF(x1 - 60, y, x1, y + 36), T.accent);
+        y += 42;
+    } else {
+        buttonRow(L"Standard-App für PDFs", g_installed ? L"Öffnet die Windows-Einstellungen" : L"Installiert FlinkPDF für deinen Benutzer",
+                  L"Festlegen", CMD_SETDEFAULT, true);
+    }
+    buttonRow(L"PDF-Registrierung", L"FlinkPDF aus „Öffnen mit“ entfernen", L"Entfernen", CMD_SET_UNREG, sys::IsRegistered());
+    y += 10;
+    Text(L"FlinkPDF 1.1  ·  Rendering: PDFium", fSmall, D2D1::RectF(x0, y, x1, y + 20), T.dim);
+    y += 32;
+    g_panelContentH = y + g_panelScroll - top;
+    g_rt->PopAxisAlignedClip();
+}
+
+static void OpenPanel(bool open) {
+    if (open && !g_panelOpen) {
+        g_panelOpen = true;
+        g_panelT = 0;
+        g_panelScroll = 0;
+        g_isDefault = sys::IsDefaultPdfApp();
+        if (g_focus != FLD_NONE && g_focus != FLD_PASSWORD) g_focus = FLD_NONE;
+    }
+    if (!g_panelOpen) return;
+    QueryPerformanceCounter(&g_panelLast);
+    SetTimer(g_hwnd, TIMER_PANEL, 8, nullptr);
+    g_panelWant = open;
+    Invalidate();
+}
+
 static void Paint() {
     if (!EnsureRT()) return;
     g_zones.clear();
     g_rt->BeginDraw();
     g_rt->SetTransform(D2D1::Matrix3x2F::Identity());
-    g_rt->Clear(Col(T.bg));
+    g_rt->SetTextAntialiasMode(g_customFrame ? D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE : D2D1_TEXT_ANTIALIAS_MODE_DEFAULT);
+    if (g_customFrame) {
+        g_rt->Clear(D2D1::ColorF(0, 0, 0, 0));  // Werkzeugleiste: Mica scheint durch
+        Fill(D2D1::RectF(0, TB(), g_cw, g_ch), T.bg);
+    } else {
+        g_rt->Clear(Col(T.bg));
+    }
     if (g_hasDoc) DrawPages();
     else if (!g_pwPath.empty()) DrawPassword();
     else DrawEmpty();
     if (g_hasDoc) DrawScrollbars();
     if (g_hasDoc && g_searchOpen) DrawSearchPanel();
+    if (g_panelOpen) DrawSettings();
     if (!g_fullscreen) DrawToolbar();
     if (!g_toast.empty()) DrawToast();
     HRESULT hr = g_rt->EndDraw();
@@ -1448,17 +1718,86 @@ static void Paint() {
 // ============================================================================
 static COLORREF ToColorRef(UINT32 rgb) { return RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF); }
 
-static void ApplyTheme() {
-    g_dark = sys::SystemUsesDarkTheme();
-    T = g_dark ? kDark : kLight;
-    BOOL d = g_dark;
-    if (FAILED(DwmSetWindowAttribute(g_hwnd, 20, &d, sizeof d))) DwmSetWindowAttribute(g_hwnd, 19, &d, sizeof d);
-    COLORREF cap = ToColorRef(T.bar), txt = ToColorRef(T.text);
+static UINT32 MixColor(UINT32 a, UINT32 b, float t) {
+    auto ch = [&](int sh) { return (UINT32)std::lround(((a >> sh) & 0xFF) * (1 - t) + ((b >> sh) & 0xFF) * t) << sh; };
+    return ch(16) | ch(8) | ch(0);
+}
+
+static bool SystemAccent(UINT32& rgb) {
+    DWORD v = 0, sz = sizeof v;
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"AccentColor", RRF_RT_REG_DWORD, nullptr, &v,
+                     &sz) != ERROR_SUCCESS)
+        return false;
+    rgb = ((v & 0xFF) << 16) | (v & 0xFF00) | ((v >> 16) & 0xFF);  // ABGR -> RGB
+    return true;
+}
+
+static bool DetectWin11() {
+    typedef LONG(WINAPI * RtlGetVersion_t)(OSVERSIONINFOW*);
+    auto fn = (RtlGetVersion_t)(void*)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
+    OSVERSIONINFOW vi{sizeof vi};
+    if (!fn || fn(&vi) != 0) return false;
+    // Wine meldet sich ggf. als Windows 10; echte Win11-Builds beginnen bei 22000
+    return vi.dwMajorVersion == 10 && vi.dwBuildNumber >= 22000;
+}
+
+static int SysMetric(int idx) {
+    typedef int(WINAPI * Fn)(int, UINT);
+    static Fn fn = (Fn)(void*)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetSystemMetricsForDpi");
+    return fn ? fn(idx, (UINT)g_dpi) : GetSystemMetrics(idx);
+}
+static int FrameY() { return SysMetric(SM_CYFRAME) + SysMetric(SM_CXPADDEDBORDER); }
+
+static void UpdateCaptionBounds() {
+    g_captionLeft = 1e9f;
+    if (!g_customFrame) return;
+    RECT r{}, wr{};
+    if (FAILED(DwmGetWindowAttribute(g_hwnd, 5 /*DWMWA_CAPTION_BUTTON_BOUNDS*/, &r, sizeof r)) || r.right <= r.left) return;
+    GetWindowRect(g_hwnd, &wr);
+    POINT o{0, 0};
+    ClientToScreen(g_hwnd, &o);
+    g_captionLeft = PxToDip(r.left + wr.left - o.x);
+}
+
+// Windows 11: Fensterrahmen in den Clientbereich erweitern und Mica als Hintergrund der Werkzeugleiste nutzen.
+// Das Compositing übernimmt DWM auf der GPU – für die App entstehen keine zusätzlichen Kosten.
+static void ApplyFrame() {
+    bool want = g_isWin11 && S.mica && !g_fullscreen;
+    if (want != g_customFrame) {
+        g_customFrame = want;
+        SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    MARGINS m = g_customFrame ? MARGINS{-1, -1, -1, -1} : MARGINS{0, 0, 0, 0};
+    DwmExtendFrameIntoClientArea(g_hwnd, &m);
+    if (g_isWin11) {
+        int backdrop = g_customFrame ? 2 /*DWMSBT_MAINWINDOW = Mica*/ : 1 /*DWMSBT_NONE*/;
+        if (FAILED(DwmSetWindowAttribute(g_hwnd, 38 /*DWMWA_SYSTEMBACKDROP_TYPE*/, &backdrop, sizeof backdrop))) {
+            BOOL mica = g_customFrame;  // Windows 11 21H2
+            DwmSetWindowAttribute(g_hwnd, 1029 /*DWMWA_MICA_EFFECT*/, &mica, sizeof mica);
+        }
+    }
+    COLORREF cap = g_customFrame ? 0xFFFFFFFF /*DWMWA_COLOR_DEFAULT*/ : ToColorRef(T.bar);
+    COLORREF txt = g_customFrame ? 0xFFFFFFFF : ToColorRef(T.text);
     DwmSetWindowAttribute(g_hwnd, 35 /*DWMWA_CAPTION_COLOR*/, &cap, sizeof cap);
     DwmSetWindowAttribute(g_hwnd, 36 /*DWMWA_TEXT_COLOR*/, &txt, sizeof txt);
+    UpdateCaptionBounds();
+    Invalidate();
+}
+
+static void ApplyTheme() {
+    g_dark = S.theme == 0 ? sys::SystemUsesDarkTheme() : S.theme == 2;
+    T = g_dark ? kDark : kLight;
+    UINT32 acc;
+    if (SystemAccent(acc)) {
+        T.accent = g_dark ? MixColor(acc, 0xFFFFFF, 0.42f) : MixColor(acc, 0x000000, 0.08f);
+        float lum = (0.299f * ((T.accent >> 16) & 0xFF) + 0.587f * ((T.accent >> 8) & 0xFF) + 0.114f * (T.accent & 0xFF)) / 255;
+        T.accentText = lum > 0.6f ? 0x101010 : 0xFFFFFF;
+    }
+    BOOL d = g_dark;
+    if (FAILED(DwmSetWindowAttribute(g_hwnd, 20, &d, sizeof d))) DwmSetWindowAttribute(g_hwnd, 19, &d, sizeof d);
     sys::AllowDarkMenus(g_dark);
     if (g_tip) SetWindowTheme(g_tip, g_dark ? L"DarkMode_Explorer" : nullptr, nullptr);
-    Invalidate();
+    ApplyFrame();
 }
 
 static UINT GetWindowDpi(HWND h) {
@@ -1477,6 +1816,7 @@ static void ToggleFullscreen() {
         MONITORINFO mi{sizeof mi};
         if (GetWindowPlacement(g_hwnd, &g_fsPrev) && GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
             g_fullscreen = true;
+            ApplyFrame();
             SetWindowLongW(g_hwnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
             SetWindowPos(g_hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
                          mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
@@ -1487,6 +1827,7 @@ static void ToggleFullscreen() {
         SetWindowLongW(g_hwnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
         SetWindowPlacement(g_hwnd, &g_fsPrev);
         SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        ApplyFrame();
     }
     Invalidate();
 }
@@ -1547,6 +1888,7 @@ static void ShowMenu(const D2D1_RECT_F& anchor) {
     AppendMenuW(m, MF_STRING | (g_hasDoc ? 0 : MF_GRAYED), MNU_LOCATION, L"Im Explorer anzeigen");
     AppendMenuW(m, MF_STRING | (g_hasDoc ? 0 : MF_GRAYED), MNU_OPENWITH, L"Mit anderer App öffnen…");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING, MNU_SETTINGS, L"Einstellungen\tStrg+,");
     AppendMenuW(m, MF_STRING | (sys::IsRegistered() ? 0 : MF_GRAYED), MNU_UNREGISTER, L"PDF-Registrierung entfernen");
     AppendMenuW(m, MF_STRING, MNU_ABOUT, L"Über FlinkPDF");
     POINT pt{DipToPx(anchor.right), DipToPx(anchor.bottom)};
@@ -1556,6 +1898,7 @@ static void ShowMenu(const D2D1_RECT_F& anchor) {
     switch (c) {
         case MNU_DEFAULT: SetDefaultApp(); break;
         case MNU_FULLSCREEN: ToggleFullscreen(); break;
+        case MNU_SETTINGS: OpenPanel(true); break;
         case MNU_LOCATION: {
             std::wstring a = L"/select,\"" + g_path + L"\"";
             ShellExecuteW(nullptr, L"open", L"explorer.exe", a.c_str(), nullptr, SW_SHOWNORMAL);
@@ -1575,13 +1918,14 @@ static void ShowMenu(const D2D1_RECT_F& anchor) {
             break;
         case MNU_ABOUT:
             MessageBoxW(g_hwnd,
-                        L"FlinkPDF 1.0\nEin schneller, schlanker PDF-Viewer.\n\n"
+                        L"FlinkPDF 1.1\nEin schneller, schlanker PDF-Viewer.\n\n"
                         L"Tastenkürzel:\n"
                         L"Strg+O  Öffnen\t\tStrg+F  Suchen\n"
                         L"Strg+P  Drucken\t\tStrg+G  Gehe zu Seite\n"
                         L"Strg +/−  Zoom\t\tStrg+0  Seitenbreite\n"
                         L"Strg+1  100 %\t\tStrg+2  Ganze Seite\n"
-                        L"F11  Vollbild\t\tStrg+W  Schließen\n\n"
+                        L"F11  Vollbild\t\tStrg+W  Schließen\n"
+                        L"Strg+,  Einstellungen\n\n"
                         L"Rendering: PDFium (BSD-3-Clause / Apache-2.0)",
                         L"Über FlinkPDF", MB_OK | MB_ICONINFORMATION);
             break;
@@ -1635,7 +1979,48 @@ static void Execute(int cmd, const D2D1_RECT_F& r) {
         case CMD_PWFIELD: FocusField(FLD_PASSWORD); break;
         case CMD_PWOK: SubmitPassword(); break;
         case CMD_PWCANCEL: g_pwPath.clear(); FocusField(FLD_NONE); break;
+        case CMD_SETTINGS: OpenPanel(!(g_panelOpen && g_panelWant)); break;
+        case CMD_SET_CLOSE:
+        case CMD_SET_DIM: OpenPanel(false); break;
+        case CMD_SET_PANEL: break;
+        case CMD_SET_MICA: S.mica = !S.mica; S.Save(); ApplyFrame(); break;
+        case CMD_SET_NIGHT:
+            S.night = !S.night;
+            S.Save();
+            ReleaseBitmaps();
+            UpdateJobs();
+            break;
+        case CMD_SET_SMOOTH: S.smooth = !S.smooth; S.Save(); break;
+        case CMD_SET_INVH: S.invH = !S.invH; S.Save(); break;
+        case CMD_SET_INVV: S.invV = !S.invV; S.Save(); break;
+        case CMD_SET_REMEMBER:
+            S.remember = !S.remember;
+            S.Save();
+            if (!S.remember) RegDeleteTreeW(HKEY_CURRENT_USER, kPosKey);
+            break;
+        case CMD_SET_CLEARRECENT:
+            g_recent.clear();
+            sys::SaveRecent(g_recent);
+            RegDeleteTreeW(HKEY_CURRENT_USER, kPosKey);
+            Toast(L"Verlauf geleert.");
+            break;
+        case CMD_SET_UNREG:
+            sys::UnregisterApp();
+            g_isDefault = sys::IsDefaultPdfApp();
+            Toast(L"FlinkPDF ist nicht mehr als PDF-Programm registriert.");
+            break;
         default:
+            if (cmd >= CMD_SET_THEME && cmd <= CMD_SET_THEME + 2) {
+                S.theme = cmd - CMD_SET_THEME;
+                S.Save();
+                ApplyTheme();
+            } else if (cmd >= CMD_SET_SPEED && cmd <= CMD_SET_SPEED + 2) {
+                S.speed = cmd - CMD_SET_SPEED;
+                S.Save();
+            } else if (cmd >= CMD_SET_OPEN && cmd <= CMD_SET_OPEN + 2) {
+                S.openZoom = cmd - CMD_SET_OPEN;
+                S.Save();
+            }
             if (cmd >= CMD_RECENT && cmd < CMD_RECENT + (int)g_recent.size()) {
                 std::wstring p = g_recent[cmd - CMD_RECENT];
                 if (!OpenDocument(p) && GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -1783,6 +2168,7 @@ static void OnKey(WPARAM vk) {
             case 'P': PrintDocument(); return;
             case 'F': OpenSearch(); return;
             case 'G': if (g_hasDoc) FocusField(FLD_PAGE); return;
+            case VK_OEM_COMMA: OpenPanel(!(g_panelOpen && g_panelWant)); return;
             case VK_OEM_PLUS: case VK_ADD: ZoomStep(+1); return;
             case VK_OEM_MINUS: case VK_SUBTRACT: ZoomStep(-1); return;
             case '0': case VK_NUMPAD0: ApplyFit(ZM_WIDTH); return;
@@ -1799,25 +2185,26 @@ static void OnKey(WPARAM vk) {
         case VK_F11: if (g_hasDoc || g_fullscreen) ToggleFullscreen(); return;
         case VK_F3: NextHit(shift ? -1 : +1); return;
         case VK_ESCAPE:
-            if (g_fullscreen) ToggleFullscreen();
+            if (g_panelOpen) OpenPanel(false);
+            else if (g_fullscreen) ToggleFullscreen();
             else if (g_searchOpen) CloseSearch();
             return;
     }
     if (!g_hasDoc) return;
     double page = ViewH() - 48;
     switch (vk) {
-        case VK_DOWN: ScrollBy(0, 70, true); break;
-        case VK_UP: ScrollBy(0, -70, true); break;
-        case VK_NEXT: ScrollBy(0, page, true); break;
-        case VK_PRIOR: ScrollBy(0, -page, true); break;
-        case VK_SPACE: ScrollBy(0, shift ? -page : page, true); break;
+        case VK_DOWN: ScrollBy(0, 70, S.smooth); break;
+        case VK_UP: ScrollBy(0, -70, S.smooth); break;
+        case VK_NEXT: ScrollBy(0, page, S.smooth); break;
+        case VK_PRIOR: ScrollBy(0, -page, S.smooth); break;
+        case VK_SPACE: ScrollBy(0, shift ? -page : page, S.smooth); break;
         case VK_HOME: ScrollTo(g_sx, 0, false); break;
         case VK_END: ScrollTo(g_sx, MaxSY(), false); break;
         case VK_LEFT:
-            if (MaxSX() > 0) ScrollBy(-70, 0, true); else GoToPage(CurrentPage() - 1);
+            if (MaxSX() > 0) ScrollBy(-70, 0, S.smooth); else GoToPage(CurrentPage() - 1);
             break;
         case VK_RIGHT:
-            if (MaxSX() > 0) ScrollBy(70, 0, true); else GoToPage(CurrentPage() + 1);
+            if (MaxSX() > 0) ScrollBy(70, 0, S.smooth); else GoToPage(CurrentPage() + 1);
             break;
     }
 }
@@ -1886,7 +2273,7 @@ static void OnLButtonDown(float x, float y) {
             g_sbGrab = y - t.top;
             SetCapture(g_hwnd);
         } else {
-            ScrollBy(0, y < t.top ? -(ViewH() - 48) : (ViewH() - 48), true);
+            ScrollBy(0, y < t.top ? -(ViewH() - 48) : (ViewH() - 48), S.smooth);
         }
         Invalidate();
         return;
@@ -1931,7 +2318,17 @@ static void OnLButtonUp(float x, float y) {
     }
 }
 
+static float PanelLeft();
+
 static void OnWheel(int delta, bool horizontal, float x, float y) {
+    if (g_panelOpen) {
+        if (!horizontal && x >= PanelLeft()) {
+            float maxS = std::max(0.0f, g_panelContentH - (g_ch - TB()));
+            g_panelScroll = std::clamp(g_panelScroll - delta / 120.0f * 60.0f, 0.0f, maxS);
+            Invalidate();
+        }
+        return;
+    }
     if (!g_hasDoc) return;
     bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0;
     if (ctrl && !horizontal) {
@@ -1943,18 +2340,56 @@ static void OnWheel(int delta, bool horizontal, float x, float y) {
     UINT lines = 3;
     SystemParametersInfoW(horizontal ? SPI_GETWHEELSCROLLCHARS : SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
     double step = lines == WHEEL_PAGESCROLL ? ViewH() - 48 : lines * 40.0;
-    double d = delta / 120.0 * step;
-    bool smooth = (delta % 120) == 0;
-    if (horizontal) ScrollBy(d, 0, smooth);
-    else if (shift) ScrollBy(-d, 0, smooth);
-    else ScrollBy(0, -d, smooth);
+    static const double kSpeed[] = {0.6, 1.0, 1.6};
+    double d = delta / 120.0 * step * kSpeed[S.speed];
+    bool smooth = S.smooth && (delta % 120) == 0;  // Präzisions-Touchpads liefern feine Schritte -> direkt folgen
+    if (horizontal || shift) {
+        // WM_MOUSEHWHEEL: positiv = nach rechts; Umschalt+Rad: Rad nach unten = nach rechts
+        double dx = horizontal ? d : -d;
+        if (S.invH) dx = -dx;
+        ScrollBy(dx, 0, smooth);
+    } else {
+        double dy = -d;
+        if (S.invV) dy = -dy;
+        ScrollBy(0, dy, smooth);
+    }
 }
 
 // ============================================================================
 //  Fensterprozedur
 // ============================================================================
 static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    if (g_customFrame) {
+        // System-Fensterknöpfe (Minimieren/Maximieren/Schließen inkl. Snap-Layouts) zeichnet und bedient DWM
+        LRESULT lr = 0;
+        if (DwmDefWindowProc(h, msg, wp, lp, &lr)) return lr;
+    }
     switch (msg) {
+        case WM_NCCALCSIZE:
+            if (wp && g_customFrame) {
+                NCCALCSIZE_PARAMS* p = (NCCALCSIZE_PARAMS*)lp;
+                LONG top = p->rgrc[0].top;
+                DefWindowProcW(h, msg, wp, lp);  // Standardränder links/rechts/unten
+                p->rgrc[0].top = top;              // Titelleiste entfernen – die Werkzeugleiste übernimmt
+                if (IsZoomed(h)) p->rgrc[0].top += FrameY();
+                return 0;
+            }
+            break;
+        case WM_NCHITTEST:
+            if (g_customFrame) {
+                LRESULT r = DefWindowProcW(h, msg, wp, lp);
+                if (r != HTCLIENT) return r;
+                POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+                ScreenToClient(h, &pt);
+                if (!IsZoomed(h) && pt.y < DipToPx(5)) return HTTOP;
+                float x = PxToDip(pt.x), y = PxToDip(pt.y);
+                if (y < TB() && !ZoneAt(x, y)) return HTCAPTION;  // freie Fläche der Leiste: Fenster ziehen
+                return HTCLIENT;
+            }
+            break;
+        case WM_DWMCOLORIZATIONCOLORCHANGED:
+            ApplyTheme();
+            break;
         case WM_CREATE: {
             g_hwnd = h;
             g_dpi = (float)GetWindowDpi(h);
@@ -1992,6 +2427,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE: {
             if (g_rt) g_rt->Resize(D2D1::SizeU(std::max(1, (int)LOWORD(lp)), std::max(1, (int)HIWORD(lp))));
             UpdateClientSize();
+            UpdateCaptionBounds();
             if (g_hasDoc) {
                 if (g_zoomMode != ZM_CUSTOM && std::fabs(FitZoom(g_zoomMode) - g_zoom) > 1e-4) {
                     int m = g_zoomMode;
@@ -2010,6 +2446,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_rt) g_rt->SetDpi(g_dpi, g_dpi);
             SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
             UpdateClientSize();
+            UpdateCaptionBounds();
             UpdateJobs();
             Invalidate();
             return 0;
@@ -2050,7 +2487,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             ScreenToClient(h, &p);
             int d = GET_WHEEL_DELTA_WPARAM(wp);
-            OnWheel(msg == WM_MOUSEHWHEEL ? -d : d, msg == WM_MOUSEHWHEEL, PxToDip(p.x), PxToDip(p.y));
+            OnWheel(d, msg == WM_MOUSEHWHEEL, PxToDip(p.x), PxToDip(p.y));
             return 0;
         }
         case WM_GESTURE: {
@@ -2131,6 +2568,20 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     g_toast.clear();
                     Invalidate();
                     break;
+                case TIMER_PANEL: {
+                    LARGE_INTEGER now, fq;
+                    QueryPerformanceCounter(&now);
+                    QueryPerformanceFrequency(&fq);
+                    float dt = (float)(now.QuadPart - g_panelLast.QuadPart) / fq.QuadPart;
+                    g_panelLast = now;
+                    g_panelT = std::clamp(g_panelT + (g_panelWant ? dt : -dt) / 0.16f, 0.0f, 1.0f);
+                    if ((g_panelWant && g_panelT >= 1) || (!g_panelWant && g_panelT <= 0)) {
+                        KillTimer(h, TIMER_PANEL);
+                        if (!g_panelWant) g_panelOpen = false;
+                    }
+                    Invalidate();
+                    break;
+                }
                 case TIMER_CARET:
                     if (g_focus == FLD_NONE) KillTimer(h, TIMER_CARET);
                     g_caretOn = !g_caretOn;
@@ -2140,7 +2591,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_APP_RENDERED: {
             RenderResult* r = (RenderResult*)lp;
-            if (r->gen == g_docGen && g_hasDoc && r->page < N()) {
+            if (r->gen == g_docGen && g_hasDoc && r->page < N() && r->night == S.night) {
                 PageInfo& p = g_pages[r->page];
                 if (r->hasLinks && !p.linksLoaded) {
                     p.links = std::move(r->links);
@@ -2258,6 +2709,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int show) {
     InitCommonControlsEx(&icc);
     CreateDeviceIndependent();
 
+    S.Load();
+    g_isWin11 = DetectWin11();
     sys::RefreshRegistration();
     g_isDefault = sys::IsDefaultPdfApp();
     g_installed = sys::IsInstalledCopy();
@@ -2265,7 +2718,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int show) {
     g_zoomMode = (int)sys::ReadDw(L"ZoomMode", ZM_WIDTH);
     if (g_zoomMode < 0 || g_zoomMode > 2) g_zoomMode = ZM_WIDTH;
 
-    bool dark = sys::SystemUsesDarkTheme();
+    bool dark = S.theme == 0 ? sys::SystemUsesDarkTheme() : S.theme == 2;
     WNDCLASSEXW wc{sizeof wc};
     wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = WndProc;
