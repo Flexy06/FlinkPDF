@@ -1,0 +1,29 @@
+#include <windows.h>
+#pragma code_page(65001)
+1 ICON "app.ico"
+1 RT_MANIFEST "app.manifest"
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040704b0"
+    BEGIN
+      VALUE "CompanyName", "Flexy06"
+      VALUE "FileDescription", "FlinkPDF"
+      VALUE "FileVersion", "1.0.0"
+      VALUE "InternalName", "FlinkPDF"
+      VALUE "OriginalFilename", "FlinkPDF.exe"
+      VALUE "ProductName", "FlinkPDF"
+      VALUE "ProductVersion", "1.0.0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x407, 1200
+  END
+END

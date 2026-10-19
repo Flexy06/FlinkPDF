@@ -1,0 +1,5 @@
+build/
+dist/
+*.res
+res/app.ico
+res/logo.png

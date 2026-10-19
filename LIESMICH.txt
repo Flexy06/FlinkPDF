@@ -1,0 +1,29 @@
+FlinkPDF 1.0 – schneller, schlanker PDF-Viewer für Windows 10/11
+================================================================
+
+INSTALLATION
+1. Diesen Ordner entpacken (z. B. nach "Downloads") und FlinkPDF.exe starten.
+   Falls Windows SmartScreen warnt ("Der Computer wurde durch Windows geschützt"):
+   auf "Weitere Informationen" -> "Trotzdem ausführen" klicken (die EXE ist nicht signiert).
+2. Auf "Installieren & als Standard festlegen" klicken.
+   FlinkPDF kopiert sich nach %LOCALAPPDATA%\Programs\FlinkPDF, legt einen
+   Startmenü-Eintrag an und öffnet die Windows-Einstellungen.
+3. In den Einstellungen bei ".pdf" FlinkPDF auswählen (Windows 11: oben
+   "Als Standard festlegen"). Diesen letzten Klick lässt Windows aus
+   Sicherheitsgründen nur den Benutzer selbst machen.
+   Danach kann der entpackte Ordner gelöscht werden.
+
+BEDIENUNG
+  Strg+O        Öffnen (oder PDF ins Fenster ziehen)
+  Strg+F / F3   Suchen / nächster Treffer
+  Strg+G        Gehe zu Seite (oder einfach Seitenzahl tippen)
+  Strg +/-      Zoomen (auch Strg+Mausrad, Touchpad-/Touch-Pinch)
+  Strg+0        Seitenbreite      Strg+1  100 %      Strg+2  Ganze Seite
+  Strg+P        Drucken
+  F11           Vollbild (Esc beendet)
+  Maus ziehen   Dokument verschieben; Links im PDF sind anklickbar
+
+DEINSTALLATION
+  Einstellungen -> Apps -> Installierte Apps -> FlinkPDF -> Deinstallieren
+
+Rendering: PDFium (Google, BSD-3-Clause/Apache-2.0) – Lizenzen im Ordner "Lizenzen".
