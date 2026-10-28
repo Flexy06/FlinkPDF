@@ -178,7 +178,7 @@ inline std::wstring Install() {
     std::wstring q = L"\"" + exe + L"\"";
     RegStr(kUninstKey, L"DisplayName", L"FlinkPDF");
     RegStr(kUninstKey, L"DisplayIcon", q + L",0");
-    RegStr(kUninstKey, L"DisplayVersion", L"1.1.0");
+    RegStr(kUninstKey, L"DisplayVersion", L"1.2.0");
     RegStr(kUninstKey, L"Publisher", L"Flexy06");
     RegStr(kUninstKey, L"InstallLocation", DirOf(exe));
     RegStr(kUninstKey, L"UninstallString", q + L" --uninstall");

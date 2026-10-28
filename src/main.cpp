@@ -39,22 +39,28 @@
 #define WM_APP_RENDERED (WM_APP + 1)
 #define WM_APP_SEARCH (WM_APP + 2)
 #define WM_APP_TOAST (WM_APP + 3)
+#define WM_APP_TEXT (WM_APP + 4)
 
-enum { TIMER_ANIM = 1, TIMER_ZOOM = 2, TIMER_SEARCH = 3, TIMER_TOAST = 4, TIMER_CARET = 5, TIMER_PANEL = 6 };
+enum { TIMER_ANIM = 1, TIMER_ZOOM = 2, TIMER_SEARCH = 3, TIMER_TOAST = 4, TIMER_CARET = 5, TIMER_PANEL = 6, TIMER_AUTOSCROLL = 7 };
 
 enum Cmd {
     CMD_NONE = 0, CMD_OPEN, CMD_PREV, CMD_NEXT, CMD_PAGEBOX, CMD_ZOOMOUT, CMD_ZOOMIN, CMD_ZOOMBOX, CMD_FIT,
     CMD_SEARCH, CMD_PRINT, CMD_MENU, CMD_SETDEFAULT, CMD_SEARCHFIELD, CMD_SEARCH_PREV, CMD_SEARCH_NEXT,
-    CMD_SEARCH_CLOSE, CMD_PWFIELD, CMD_PWOK, CMD_PWCANCEL, CMD_SETTINGS,
+    CMD_SEARCH_CLOSE, CMD_PWFIELD, CMD_PWOK, CMD_PWCANCEL, CMD_SETTINGS, CMD_TOC, CMD_TOC_CLOSE, CMD_TOC_PANEL,
     CMD_RECENT = 100,  // + Index
     // Einstellungen
     CMD_SET_PANEL = 200, CMD_SET_CLOSE, CMD_SET_MICA, CMD_SET_NIGHT, CMD_SET_SMOOTH, CMD_SET_INVH, CMD_SET_INVV,
-    CMD_SET_REMEMBER, CMD_SET_CLEARRECENT, CMD_SET_UNREG, CMD_SET_DIM,
+    CMD_SET_REMEMBER, CMD_SET_CLEARRECENT, CMD_SET_UNREG, CMD_SET_DIM, CMD_SET_TOCAUTO,
     CMD_SET_THEME = 230,  // + 0..2
     CMD_SET_SPEED = 240,  // + 0..2
     CMD_SET_OPEN = 250,   // + 0..2
+    CMD_SET_PCOLOR = 260, // + 0..2
+    CMD_SET_MOUSE = 270,  // + 0..1
+    CMD_TOC_ROW = 20000,  // + sichtbare Zeile
+    CMD_TOC_CHEV = 60000, // + sichtbare Zeile (Auf-/Zuklappen)
     // Menübefehle
-    MNU_DEFAULT = 1000, MNU_FULLSCREEN, MNU_LOCATION, MNU_UNREGISTER, MNU_ABOUT, MNU_OPENWITH, MNU_SETTINGS,
+    MNU_DEFAULT = 1000, MNU_FULLSCREEN, MNU_LOCATION, MNU_UNREGISTER, MNU_ABOUT, MNU_OPENWITH, MNU_SETTINGS, MNU_COPY,
+    MNU_SELALL, MNU_SEARCHSEL, MNU_TOC,
     MNU_ZOOM = 1100,  // + Prozent
     MNU_FITWIDTH = 1099, MNU_FITPAGE = 1098,
 };
@@ -65,6 +71,7 @@ enum Field { FLD_NONE, FLD_PAGE, FLD_SEARCH, FLD_PASSWORD };
 static const float GAP = 14.0f;     // Abstand zwischen Seiten (DIP)
 static const float TOOLBAR = 48.0f;  // Höhe der Werkzeugleiste (DIP)
 static const float PANEL_W = 380.0f;  // Breite des Einstellungs-Panels
+static const float TOC_W = 280.0f;    // Breite der Inhaltsverzeichnis-Seitenleiste
 static const float SB_W = 14.0f;     // Breite der Scrollbar-Zone
 static const double kZoomSteps[] = {0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25,
                                     1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0};
@@ -91,6 +98,12 @@ struct LinkInfo {
     std::wstring uri;
 };
 
+// Ein Zeichen der Textebene; r normiert (0..1), bei erzeugten Zeichen (Zeilenumbruch, Leerzeichen) leer
+struct CharBox {
+    D2D1_RECT_F r;
+    unsigned int ch;
+};
+
 struct PageInfo {
     float w = 612, h = 792;  // in Punkt
     ID2D1Bitmap* bmp = nullptr;
@@ -98,6 +111,8 @@ struct PageInfo {
     int bmpW = 0, bmpH = 0;
     bool linksLoaded = false;
     std::vector<LinkInfo> links;
+    bool textLoaded = false;
+    std::vector<CharBox> chars;  // Zeichen für die Textauswahl (erst bei Bedarf geladen)
 };
 
 struct Job {
@@ -105,7 +120,12 @@ struct Job {
     float scale = 0;
     int w = 0, h = 0;
     bool links = false;
-    bool night = false;
+    int color = 0;  // Seitenfarbe: 0 normal, 1 Sepia, 2 dunkel
+};
+
+struct TextResult {
+    int gen, page;
+    std::vector<CharBox> chars;
 };
 
 struct RenderResult {
@@ -115,7 +135,7 @@ struct RenderResult {
     std::vector<unsigned char> px;
     bool hasLinks = false;
     std::vector<LinkInfo> links;
-    bool night = false;
+    int color = 0;
 };
 
 struct SearchHit {
@@ -139,7 +159,9 @@ struct Zone {
 struct Settings {
     int theme = 0;           // 0 = wie Windows, 1 = hell, 2 = dunkel
     bool mica = true;        // Windows 11: Mica + integrierte Titelleiste
-    bool night = false;      // Seiten dunkel darstellen
+    int pageColor = 0;       // Seitenfarbe: 0 normal, 1 Sepia, 2 dunkel (Bilder bleiben unverändert)
+    int mouseMode = 0;       // linke Maustaste: 0 = Text auswählen (auf Text), 1 = immer verschieben
+    bool tocAuto = false;    // Inhaltsverzeichnis beim Öffnen anzeigen
     bool smooth = true;      // sanftes Scrollen
     int speed = 1;           // 0 langsam, 1 normal, 2 schnell
     bool invH = false;       // horizontale Scrollrichtung umkehren
@@ -150,7 +172,9 @@ struct Settings {
     void Load() {
         theme = (int)std::min<DWORD>(2, sys::ReadDw(L"Theme", 0));
         mica = sys::ReadDw(L"Mica", 1) != 0;
-        night = sys::ReadDw(L"Night", 0) != 0;
+        pageColor = (int)std::min<DWORD>(2, sys::ReadDw(L"PageColor", sys::ReadDw(L"Night", 0) ? 2 : 0));
+        mouseMode = (int)std::min<DWORD>(1, sys::ReadDw(L"MouseMode", 0));
+        tocAuto = sys::ReadDw(L"TocAuto", 0) != 0;
         smooth = sys::ReadDw(L"Smooth", 1) != 0;
         speed = (int)std::min<DWORD>(2, sys::ReadDw(L"Speed", 1));
         invH = sys::ReadDw(L"InvertH", 0) != 0;
@@ -161,7 +185,9 @@ struct Settings {
     void Save() const {
         sys::WriteDw(L"Theme", theme);
         sys::WriteDw(L"Mica", mica);
-        sys::WriteDw(L"Night", night);
+        sys::WriteDw(L"PageColor", pageColor);
+        sys::WriteDw(L"MouseMode", mouseMode);
+        sys::WriteDw(L"TocAuto", tocAuto);
         sys::WriteDw(L"Smooth", smooth);
         sys::WriteDw(L"Speed", speed);
         sys::WriteDw(L"InvertH", invH);
@@ -215,7 +241,7 @@ static ID2D1SolidColorBrush* g_br;
 static ID2D1LinearGradientBrush* g_grad;
 static ID2D1PathGeometry *g_logoPage, *g_logoFold, *g_logoBolt;
 static IDWriteTextFormat *fUi, *fUiC, *fUiR, *fUiEll, *fBold, *fSmall, *fSmallC, *fIcon, *fIconBig, *fTitle, *fHead, *fSection,
-    *fSeg;
+    *fSeg, *fItem, *fIconSm;
 static UINT32 g_maxBmp = 8192;
 
 // Dokument
@@ -276,12 +302,36 @@ static Settings S;
 static bool g_isWin11 = false;
 static bool g_customFrame = false;   // Mica + Werkzeugleiste in der Titelleiste
 static float g_captionLeft = 1e9f;   // linke Kante der System-Fensterknöpfe (Client-DIP)
+static D2D1_RECT_F g_capRect{0, 0, 0, 0};  // Bereich der System-Fensterknöpfe (Client-DIP)
+static int g_ncPressed = 0;          // gedrückter Fensterknopf (HTCLOSE/HTMINBUTTON/HTMAXBUTTON)
 static bool g_panelOpen = false;     // Einstellungs-Panel
 static float g_panelT = 0;           // Animation 0..1
 static bool g_panelWant = false;     // Ziel der Animation (offen/zu)
 static LARGE_INTEGER g_panelLast;
 static float g_panelScroll = 0, g_panelContentH = 0;
 static const size_t kRecentMax = 30;   // gespeichert (für Lesepositionen); angezeigt werden max. 8
+
+// Textauswahl
+struct TextPos {
+    int page = 0, idx = 0;  // Einfügeposition vor Zeichen idx
+};
+static bool operator<(const TextPos& a, const TextPos& b) { return a.page < b.page || (a.page == b.page && a.idx < b.idx); }
+static TextPos g_selA, g_selB;
+static bool g_selActive = false, g_selecting = false;
+static float g_selMx = 0, g_selMy = 0;
+
+// Inhaltsverzeichnis (Lesezeichen des PDFs)
+struct TocItem {
+    std::wstring title;
+    int page = -1;
+    float y = -1;
+    int depth = 0;
+    bool kids = false, open = false;
+};
+static std::vector<TocItem> g_toc;
+static std::vector<int> g_tocVis;  // sichtbare Einträge (Indizes in g_toc)
+static bool g_tocLoaded = false, g_tocOpen = false;
+static float g_tocScroll = 0;
 
 template <class T> static void SafeRelease(T*& p) {
     if (p) { p->Release(); p = nullptr; }
@@ -334,10 +384,114 @@ static void ExtractLinks(pdf::PAGE pg, const Job& job, std::vector<LinkInfo>& ou
     (void)job;
 }
 
+// --- Seitenfarben: Bildbereiche ermitteln (inkl. Bilder in Form-XObjects) -------------------------
+static pdf::MATRIX MulMatrix(const pdf::MATRIX& m, const pdf::MATRIX& f) {  // erst f, dann m
+    return {m.a * f.a + m.c * f.b, m.b * f.a + m.d * f.b, m.a * f.c + m.c * f.d, m.b * f.c + m.d * f.d,
+            m.a * f.e + m.c * f.f + m.e, m.b * f.e + m.d * f.f + m.f};
+}
+
+static void WalkImages(pdf::PAGE pg, pdf::OBJ o, const pdf::MATRIX& m, int w, int h, std::vector<RECT>& out, int depth) {
+    int type = P.ObjGetType(o);
+    if (type == pdf::OBJ_IMAGE) {
+        float l, b, r, t;
+        if (!P.ObjGetBounds(o, &l, &b, &r, &t)) return;
+        float xs[4] = {l, r, l, r}, ys[4] = {b, b, t, t};
+        int x0 = INT_MAX, y0 = INT_MAX, x1 = INT_MIN, y1 = INT_MIN;
+        for (int k = 0; k < 4; k++) {
+            double px = m.a * xs[k] + m.c * ys[k] + m.e, py = m.b * xs[k] + m.d * ys[k] + m.f;
+            int dx, dy;
+            P.PageToDevice(pg, 0, 0, w, h, 0, px, py, &dx, &dy);
+            x0 = std::min(x0, dx); x1 = std::max(x1, dx);
+            y0 = std::min(y0, dy); y1 = std::max(y1, dy);
+        }
+        RECT rc{std::max(0, x0), std::max(0, y0), std::min(w, x1), std::min(h, y1)};
+        if (rc.right - rc.left >= 2 && rc.bottom - rc.top >= 2) out.push_back(rc);
+    } else if (type == pdf::OBJ_FORM && depth < 4) {
+        pdf::MATRIX fm{1, 0, 0, 1, 0, 0};
+        P.ObjGetMatrix(o, &fm);
+        pdf::MATRIX cm = MulMatrix(m, fm);
+        int n = P.FormCountObjects(o);
+        for (int i = 0; i < n && out.size() < 512; i++) WalkImages(pg, P.FormGetObject(o, (unsigned long)i), cm, w, h, out, depth + 1);
+    }
+}
+
+static void CollectImageRects(pdf::PAGE pg, int w, int h, std::vector<RECT>& out) {
+    const pdf::MATRIX id{1, 0, 0, 1, 0, 0};
+    int n = P.PageCountObjects(pg);
+    for (int i = 0; i < n && out.size() < 512; i++) WalkImages(pg, P.PageGetObject(pg, i), id, w, h, out, 0);
+}
+
+// Färbt Text und Grafik um (Tabelle pro Kanal) – Bilder werden vorher gesichert und danach zurückkopiert
+static void ApplyPageColor(RenderResult& res, const std::vector<RECT>& imgs) {
+    static unsigned char lut[3][3][256];  // [Modus][Kanal B,G,R][Wert]
+    static bool init = false;
+    if (!init) {
+        const int ink[2][3] = {{0x22, 0x2F, 0x3B}, {0xE4, 0xE4, 0xE4}};    // Sepia: Tinte, Dunkel: Schrift (B,G,R)
+        const int paper[2][3] = {{0xD8, 0xEC, 0xF4}, {0x1E, 0x1E, 0x1E}};  // Sepia: Papier, Dunkel: Hintergrund
+        for (int mode = 1; mode <= 2; mode++)
+            for (int c = 0; c < 3; c++)
+                for (int v = 0; v < 256; v++)
+                    lut[mode][c][v] = (unsigned char)(ink[mode - 1][c] + (paper[mode - 1][c] - ink[mode - 1][c]) * v / 255);
+        init = true;
+    }
+    const int mode = std::clamp(res.color, 1, 2);
+    const int stride = res.w * 4;
+    std::vector<std::vector<unsigned char>> saved;
+    for (const RECT& r : imgs) {
+        std::vector<unsigned char> buf((size_t)(r.right - r.left) * 4 * (r.bottom - r.top));
+        for (int y = r.top; y < r.bottom; y++)
+            memcpy(&buf[(size_t)(y - r.top) * (r.right - r.left) * 4], &res.px[(size_t)y * stride + r.left * 4], (r.right - r.left) * 4);
+        saved.push_back(std::move(buf));
+    }
+    unsigned char* d = res.px.data();
+    const unsigned char *lb = lut[mode][0], *lg = lut[mode][1], *lr = lut[mode][2];
+    for (size_t k = 0, n = res.px.size(); k < n; k += 4) {
+        d[k] = lb[d[k]];
+        d[k + 1] = lg[d[k + 1]];
+        d[k + 2] = lr[d[k + 2]];
+    }
+    for (size_t i = 0; i < imgs.size(); i++) {
+        const RECT& r = imgs[i];
+        for (int y = r.top; y < r.bottom; y++)
+            memcpy(&res.px[(size_t)y * stride + r.left * 4], &saved[i][(size_t)(y - r.top) * (r.right - r.left) * 4], (r.right - r.left) * 4);
+    }
+}
+
+// --- Textebene einer Seite laden (Aufrufer hält g_pdfMx) ------------------------------------------
+static bool ExtractText(int page, std::vector<CharBox>& out) {
+    pdf::PAGE pg = P.LoadPage(g_doc, page);
+    if (!pg) return false;
+    pdf::SIZEF sz{612, 792};
+    P.GetPageSizeByIndexF(g_doc, page, &sz);
+    const int SX = std::max(1, (int)lround(sz.w * 8)), SY = std::max(1, (int)lround(sz.h * 8));
+    pdf::TEXTPG tp = P.TextLoadPage(pg);
+    if (tp) {
+        int n = P.TextCountChars(tp);
+        out.reserve(std::max(0, n));
+        for (int i = 0; i < n; i++) {
+            CharBox c{D2D1::RectF(0, 0, 0, 0), P.TextGetUnicode(tp, i)};
+            pdf::RECTF rc;
+            if (P.TextGetLooseCharBox(tp, i, &rc)) {
+                int x1, y1, x2, y2;
+                P.PageToDevice(pg, 0, 0, SX, SY, 0, rc.l, rc.t, &x1, &y1);
+                P.PageToDevice(pg, 0, 0, SX, SY, 0, rc.r, rc.b, &x2, &y2);
+                c.r = D2D1::RectF(std::min(x1, x2) / (float)SX, std::min(y1, y2) / (float)SY, std::max(x1, x2) / (float)SX,
+                                  std::max(y1, y2) / (float)SY);
+            }
+            out.push_back(c);
+        }
+        P.TextClosePage(tp);
+    }
+    P.ClosePage(pg);
+    return true;
+}
+
 class Worker {
     std::mutex mx;
     std::condition_variable cv;
     std::deque<Job> jobs;
+    std::deque<std::pair<int, int>> textJobs;  // (gen, page)
+    std::pair<int, int> textInflight{-1, -1};
     Job inflight;
     bool quit = false;
     // Suche
@@ -366,7 +520,7 @@ class Worker {
             std::lock_guard<std::mutex> lk(mx);
             jobs.clear();
             for (auto& j : v) {
-                if (j.page == inflight.page && j.gen == inflight.gen && j.scale == inflight.scale && j.night == inflight.night) continue;
+                if (j.page == inflight.page && j.gen == inflight.gen && j.scale == inflight.scale && j.color == inflight.color) continue;
                 jobs.push_back(j);
             }
         }
@@ -384,22 +538,38 @@ class Worker {
         std::lock_guard<std::mutex> lk(mx);
         sActive = false;
     }
+    // Textebene im Leerlauf laden (niedrigere Priorität als das Rendern)
+    void SetTextJobs(int gen, const std::vector<int>& pages) {
+        {
+            std::lock_guard<std::mutex> lk(mx);
+            textJobs.clear();
+            for (int p : pages)
+                if (!(gen == textInflight.first && p == textInflight.second)) textJobs.push_back({gen, p});
+        }
+        cv.notify_all();
+    }
 
   private:
     void Run() {
         for (;;) {
             Job job;
-            bool doSearch = false, last = false;
+            bool doSearch = false, doText = false, last = false;
             int page = 0, gen = 0, id = 0;
             std::wstring q;
             {
                 std::unique_lock<std::mutex> lk(mx);
-                cv.wait(lk, [&] { return quit || !jobs.empty() || sActive; });
+                cv.wait(lk, [&] { return quit || !jobs.empty() || !textJobs.empty() || sActive; });
                 if (quit) return;
                 if (!jobs.empty()) {
                     job = jobs.front();
                     jobs.pop_front();
                     inflight = job;
+                } else if (!textJobs.empty()) {
+                    doText = true;
+                    gen = textJobs.front().first;
+                    page = textJobs.front().second;
+                    textJobs.pop_front();
+                    textInflight = {gen, page};
                 } else {
                     doSearch = true;
                     page = (sStart + sIdx) % sN;
@@ -409,7 +579,17 @@ class Worker {
                     gen = sGen; id = sId; q = sQuery;
                 }
             }
-            if (!doSearch) {
+            if (doText) {
+                auto* res = new TextResult{gen, page, {}};
+                bool ok;
+                {
+                    std::lock_guard<std::mutex> lk(g_pdfMx);
+                    ok = g_doc && g_docGen == gen && ExtractText(page, res->chars);
+                }
+                if (!ok || !PostMessageW(hwnd, WM_APP_TEXT, 0, (LPARAM)res)) delete res;
+                std::lock_guard<std::mutex> lk(mx);
+                textInflight = {-1, -1};
+            } else if (!doSearch) {
                 Render(job);
                 std::lock_guard<std::mutex> lk(mx);
                 inflight = Job();
@@ -420,13 +600,14 @@ class Worker {
     }
 
     void Render(const Job& job) {
-        RenderResult* res = new RenderResult{job.gen, job.page, job.scale, job.w, job.h, {}, false, {}, job.night};
+        RenderResult* res = new RenderResult{job.gen, job.page, job.scale, job.w, job.h, {}, false, {}, job.color};
         try {
             res->px.resize((size_t)job.w * job.h * 4);
         } catch (...) {
             delete res;
             return;
         }
+        std::vector<RECT> imgs;  // Bildbereiche in Pixeln (bleiben bei Sepia/dunkel unverändert)
         {
             std::lock_guard<std::mutex> lk(g_pdfMx);
             if (!g_doc || g_docGen != job.gen) { delete res; return; }
@@ -437,22 +618,7 @@ class Worker {
                 if (pg) P.RenderPageBitmap(b, pg, 0, 0, job.w, job.h, 0, pdf::F_ANNOT);
                 P.BitmapDestroy(b);
             }
-            if (job.night) {
-                // Nachtmodus: Helligkeit invertieren (Weiß -> Dunkelgrau, Schwarz -> Hellgrau), per Tabelle
-                static unsigned char lut[256];
-                static bool lutInit = false;
-                if (!lutInit) {
-                    for (int v = 0; v < 256; v++) lut[v] = (unsigned char)(0xE4 - v * (0xE4 - 0x1E) / 255);
-                    lutInit = true;
-                }
-                unsigned char* d = res->px.data();
-                size_t n = res->px.size();
-                for (size_t k = 0; k < n; k += 4) {
-                    d[k] = lut[d[k]];
-                    d[k + 1] = lut[d[k + 1]];
-                    d[k + 2] = lut[d[k + 2]];
-                }
-            }
+            if (pg && job.color) CollectImageRects(pg, job.w, job.h, imgs);
             if (pg && job.links) {
                 pdf::SIZEF sz{612, 792};
                 P.GetPageSizeByIndexF(g_doc, job.page, &sz);
@@ -461,6 +627,7 @@ class Worker {
             res->hasLinks = job.links;
             if (pg) P.ClosePage(pg);
         }
+        if (job.color) ApplyPageColor(*res, imgs);  // außerhalb der PDFium-Sperre
         if (!PostMessageW(hwnd, WM_APP_RENDERED, 0, (LPARAM)res)) delete res;
     }
 
@@ -509,7 +676,9 @@ static Worker g_worker;
 //  Hilfsfunktionen
 // ============================================================================
 static float TB() { return g_fullscreen ? 0.0f : TOOLBAR; }
-static float ViewW() { return g_cw; }
+static float ContentX0() { return (g_hasDoc && g_tocOpen && !g_fullscreen) ? std::min(TOC_W, g_cw * 0.45f) : 0.0f; }
+static float ViewW() { return std::max(1.0f, g_cw - ContentX0()); }
+static float CenterX() { return ContentX0() + ViewW() / 2; }
 static float ViewH() { return std::max(1.0f, g_ch - TB()); }
 static double K() { return g_zoom * 96.0 / 72.0; }  // DIP pro Punkt
 static int N() { return (int)g_pages.size(); }
@@ -522,10 +691,12 @@ static float Snap(double v) { double s = g_dpi / 96.0; return (float)(std::round
 
 static D2D1_RECT_F PageRect(int i) {
     double w = g_pages[i].w * K(), h = g_pages[i].h * K();
-    float x = Snap((ContentW() - w) / 2 - g_sx);
+    float x = Snap(ContentX0() + (ContentW() - w) / 2 - g_sx);
     float y = Snap(TB() + PageTop(i) - g_sy);
     return D2D1::RectF(x, y, x + (float)w, y + (float)h);
 }
+
+static bool In(const D2D1_RECT_F& r, float x, float y) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
 
 static int PageAtDocY(double y) {
     int lo = 0, hi = N() - 1, ans = 0;
@@ -619,10 +790,16 @@ static void UpdateJobs() {
         j.w = std::max(1, (int)std::lround(p.w * sc));
         j.h = std::max(1, (int)std::lround(p.h * sc));
         j.links = !p.linksLoaded;
-        j.night = S.night;
+        j.color = S.pageColor;
         jobs.push_back(j);
     }
     g_worker.SetJobs(jobs);
+    if (S.mouseMode == 0) {  // Textebene der sichtbaren Seiten im Leerlauf vorladen (für Cursor & Auswahl)
+        std::vector<int> tj;
+        for (int i = a; i <= b; i++)
+            if (!g_pages[i].textLoaded) tj.push_back(i);
+        g_worker.SetTextJobs(g_docGen, tj);
+    }
 
     // Speicher freigeben: alles außerhalb des Sichtbereichs ±3 Seiten
     for (int i = 0; i < N(); i++) {
@@ -707,12 +884,12 @@ static void SetZoom(double z, float ax, float ay, int mode = ZM_CUSTOM) {
     double docY = g_sy + vy;
     int i = PageAtDocY(docY);
     double off = (docY - GAP * (i + 1) - g_prefix[i] * oldK) / oldK;
-    double cx = g_sx + ax - ContentW() / 2;
+    double cx = g_sx + (ax - ContentX0()) - ContentW() / 2;
     double rel = cx / oldK;
     g_zoom = z;
     double k = K();
     g_sy = GAP * (i + 1) + g_prefix[i] * k + off * k - vy;
-    g_sx = rel * k + ContentW() / 2 - ax;
+    g_sx = rel * k + ContentW() / 2 - (ax - ContentX0());
     g_tx = g_sx; g_ty = g_sy;
     ClampScroll();
     g_zoomSettling = true;
@@ -724,7 +901,7 @@ static void SetZoom(double z, float ax, float ay, int mode = ZM_CUSTOM) {
 static void ApplyFit(int mode) {
     if (!g_hasDoc) { g_zoomMode = mode; return; }
     int c = CurrentPage();
-    SetZoom(FitZoom(mode), ViewW() / 2, TB(), mode);
+    SetZoom(FitZoom(mode), CenterX(), TB(), mode);
     if (mode == ZM_PAGE) ScrollTo(g_sx, PageTop(c) - GAP, false);
     sys::WriteDw(L"ZoomMode", mode);
 }
@@ -737,7 +914,7 @@ static void ZoomStep(int dir) {
         for (int i = (int)(sizeof kZoomSteps / sizeof kZoomSteps[0]) - 1; i >= 0; i--)
             if (kZoomSteps[i] < z - 0.001) { nz = kZoomSteps[i]; break; }
     }
-    SetZoom(nz, ViewW() / 2, TB() + ViewH() / 2);
+    SetZoom(nz, CenterX(), TB() + ViewH() / 2);
     sys::WriteDw(L"ZoomMode", ZM_CUSTOM);
     sys::WriteDw(L"Zoom", (DWORD)std::lround(g_zoom * 100));
 }
@@ -788,6 +965,11 @@ static void CloseDocument() {
     g_curHit = -1;
     g_searchDone = true;
     g_path.clear();
+    g_selActive = g_selecting = false;
+    g_toc.clear();
+    g_tocVis.clear();
+    g_tocLoaded = false;
+    g_tocScroll = 0;
     SetWindowTextW(g_hwnd, L"FlinkPDF");
 }
 
@@ -810,6 +992,8 @@ static std::string ToUtf8(const std::wstring& w) {
     WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
     return s;
 }
+
+static void LoadToc();
 
 static bool OpenDocument(const std::wstring& pathIn, const std::wstring* password = nullptr) {
     std::wstring path = pathIn;
@@ -895,6 +1079,10 @@ static bool OpenDocument(const std::wstring& pathIn, const std::wstring* passwor
     UpdateClientSize();
     StopAnim();
     g_sx = g_sy = g_tx = g_ty = 0;
+    if (S.tocAuto || g_tocOpen) {
+        LoadToc();
+        if (S.tocAuto) g_tocOpen = !g_toc.empty();
+    }
     if (S.openZoom == 1) g_zoomMode = ZM_WIDTH;
     else if (S.openZoom == 2) g_zoomMode = ZM_PAGE;
     g_zoom = g_zoomMode == ZM_CUSTOM ? sys::ReadDw(L"Zoom", 100) / 100.0 : FitZoom(g_zoomMode);
@@ -1002,6 +1190,232 @@ static void CloseSearch() {
     g_curHit = -1;
     g_searchId++;
     g_searchDone = true;
+    Invalidate();
+}
+
+// ============================================================================
+//  Textauswahl
+// ============================================================================
+static void EnsureText(int page) {
+    PageInfo& p = g_pages[page];
+    if (p.textLoaded) return;
+    std::vector<CharBox> chars;
+    {
+        std::lock_guard<std::mutex> lk(g_pdfMx);
+        if (g_doc) ExtractText(page, chars);
+    }
+    p.chars = std::move(chars);
+    p.textLoaded = true;
+}
+
+static int PageAtPoint(float x, float y) {
+    if (!g_hasDoc || y < TB() || x < ContentX0()) return -1;
+    int a, b;
+    VisibleRange(a, b);
+    for (int i = a; i <= b; i++)
+        if (In(PageRect(i), x, y)) return i;
+    return -1;
+}
+
+// Einfügeposition (vor Zeichen i) für einen Punkt; onText = Punkt liegt auf einem Zeichen
+static int CaretAt(int page, float x, float y, bool* onText, int* charIdx = nullptr) {
+    PageInfo& p = g_pages[page];
+    if (onText) *onText = false;
+    if (charIdx) *charIdx = -1;
+    if (!p.textLoaded) return 0;
+    D2D1_RECT_F r = PageRect(page);
+    float nx = (x - r.left) / std::max(1.0f, r.right - r.left), ny = (y - r.top) / std::max(1.0f, r.bottom - r.top);
+    int best = -1;
+    float bestScore = 1e30f;
+    for (int i = 0; i < (int)p.chars.size(); i++) {
+        const D2D1_RECT_F& c = p.chars[i].r;
+        if (c.right <= c.left) continue;
+        float dx = (nx < c.left ? c.left - nx : nx > c.right ? nx - c.right : 0) * p.w;
+        float dy = (ny < c.top ? c.top - ny : ny > c.bottom ? ny - c.bottom : 0) * p.h;
+        float score = dy * 8 + dx;  // gleiche Zeile bevorzugen
+        if (score < bestScore) {
+            bestScore = score;
+            best = i;
+            if (score == 0) break;
+        }
+    }
+    if (best < 0) return 0;
+    if (onText) *onText = bestScore < 1.5f;
+    if (charIdx) *charIdx = best;
+    const D2D1_RECT_F& c = p.chars[best].r;
+    return nx > (c.left + c.right) / 2 ? best + 1 : best;
+}
+
+static void SelOrdered(TextPos& a, TextPos& b) {
+    a = g_selA;
+    b = g_selB;
+    if (b < a) std::swap(a, b);
+}
+
+static void UpdateSelectionFromMouse() {
+    float x = g_selMx, y = std::clamp(g_selMy, TB() + 1, g_ch - 1);
+    int pg = PageAtPoint(std::max(x, ContentX0() + 1), y);
+    if (pg < 0) pg = std::clamp(PageAtDocY(g_sy + (y - TB())), 0, N() - 1);
+    EnsureText(pg);
+    TextPos np{pg, CaretAt(pg, x, y, nullptr)};
+    if (np.page != g_selB.page || np.idx != g_selB.idx) {
+        g_selB = np;
+        Invalidate();
+    }
+    g_selActive = g_selA.page != g_selB.page || g_selA.idx != g_selB.idx;
+}
+
+static bool IsWordChar(unsigned int cp) {
+    return cp == '_' || (cp < 0x10000 && IsCharAlphaNumericW((WCHAR)cp)) || (cp >= 0x10000);
+}
+
+static void SelectWordAt(int page, float x, float y) {
+    EnsureText(page);
+    int ci = -1;
+    bool on = false;
+    CaretAt(page, x, y, &on, &ci);
+    if (!on || ci < 0) return;
+    const auto& ch = g_pages[page].chars;
+    int a = ci, b = ci + 1;
+    if (IsWordChar(ch[ci].ch)) {
+        while (a > 0 && IsWordChar(ch[a - 1].ch)) a--;
+        while (b < (int)ch.size() && IsWordChar(ch[b].ch)) b++;
+    }
+    g_selA = {page, a};
+    g_selB = {page, b};
+    g_selActive = true;
+    Invalidate();
+}
+
+static void SelectAll() {
+    if (!g_hasDoc) return;
+    g_selA = {0, 0};
+    g_selB = {N() - 1, INT_MAX / 2};
+    g_selActive = true;
+    Invalidate();
+}
+
+static std::wstring SelectionText(size_t limit = SIZE_MAX) {
+    std::wstring out;
+    if (!g_selActive) return out;
+    TextPos a, b;
+    SelOrdered(a, b);
+    for (int p = a.page; p <= b.page && out.size() < limit; p++) {
+        EnsureText(p);
+        const auto& ch = g_pages[p].chars;
+        int n = (int)ch.size();
+        int s = p == a.page ? std::min(a.idx, n) : 0, e = p == b.page ? std::min(b.idx, n) : n;
+        for (int k = s; k < e; k++) {
+            unsigned int cp = ch[k].ch;
+            if (cp == 0x2) cp = '-';  // weiches Trennzeichen am Zeilenende
+            if (cp == 0 || cp == 0xFFFE || cp == 0xFFFF || (cp < 32 && cp != '\r' && cp != '\n' && cp != '\t')) continue;
+            if (cp < 0x10000) out.push_back((wchar_t)cp);
+            else {
+                cp -= 0x10000;
+                out.push_back((wchar_t)(0xD800 + (cp >> 10)));
+                out.push_back((wchar_t)(0xDC00 + (cp & 0x3FF)));
+            }
+        }
+        if (p != b.page) out += L"\r\n";
+    }
+    return out;
+}
+
+static void CopySelection() {
+    std::wstring t = SelectionText();
+    if (t.empty() || !OpenClipboard(g_hwnd)) return;
+    EmptyClipboard();
+    HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, (t.size() + 1) * sizeof(wchar_t));
+    if (hg) {
+        memcpy(GlobalLock(hg), t.c_str(), (t.size() + 1) * sizeof(wchar_t));
+        GlobalUnlock(hg);
+        if (!SetClipboardData(CF_UNICODETEXT, hg)) GlobalFree(hg);
+    }
+    CloseClipboard();
+    Toast(L"Text kopiert", 1400);
+}
+
+// ============================================================================
+//  Inhaltsverzeichnis
+// ============================================================================
+static void RebuildTocVis() {
+    g_tocVis.clear();
+    int skipDepth = INT_MAX;
+    for (int i = 0; i < (int)g_toc.size(); i++) {
+        const TocItem& t = g_toc[i];
+        if (t.depth > skipDepth) continue;
+        skipDepth = INT_MAX;
+        g_tocVis.push_back(i);
+        if (t.kids && !t.open) skipDepth = t.depth;
+    }
+}
+
+static void LoadToc() {
+    g_toc.clear();
+    g_tocLoaded = true;
+    if (!g_hasDoc) return;
+    std::lock_guard<std::mutex> lk(g_pdfMx);
+    if (!g_doc) return;
+    struct Frame {
+        pdf::BOOKMARK bm;
+        int depth;
+    };
+    std::vector<Frame> stack;
+    std::vector<void*> seen;
+    pdf::BOOKMARK first = P.BookmarkFirstChild(g_doc, nullptr);
+    if (first) stack.push_back({first, 0});
+    while (!stack.empty() && g_toc.size() < 5000) {
+        Frame f = stack.back();
+        stack.pop_back();
+        if (std::find(seen.begin(), seen.end(), f.bm) != seen.end()) continue;  // Schutz vor Zyklen
+        seen.push_back(f.bm);
+        TocItem it;
+        it.depth = f.depth;
+        unsigned long n = P.BookmarkGetTitle(f.bm, nullptr, 0);
+        if (n > 2 && n < 4096) {
+            std::wstring t(n / 2, L'\0');
+            P.BookmarkGetTitle(f.bm, &t[0], n);
+            t.resize(wcslen(t.c_str()));
+            for (auto& c : t)
+                if (c < 32) c = L' ';
+            it.title = t;
+        }
+        pdf::DEST d = P.BookmarkGetDest(g_doc, f.bm);
+        if (!d) {
+            pdf::ACTION a = P.BookmarkGetAction(f.bm);
+            if (a && P.ActionGetType(a) == pdf::ACTION_GOTO) d = P.ActionGetDest(g_doc, a);
+        }
+        if (d) {
+            it.page = P.DestGetDestPageIndex(g_doc, d);
+            int hx = 0, hy = 0, hz = 0;
+            float x = 0, y = 0, z = 0;
+            if (it.page >= 0 && it.page < N() && P.DestGetLocationInPage(d, &hx, &hy, &hz, &x, &y, &z) && hy)
+                it.y = std::clamp(1.0f - y / g_pages[it.page].h, 0.0f, 1.0f);
+        }
+        pdf::BOOKMARK child = f.depth < 12 ? P.BookmarkFirstChild(g_doc, f.bm) : nullptr;
+        it.kids = child != nullptr;
+        g_toc.push_back(it);
+        pdf::BOOKMARK next = P.BookmarkNextSibling(g_doc, f.bm);
+        if (next) stack.push_back({next, f.depth});
+        if (child) stack.push_back({child, f.depth + 1});  // Kind zuerst (Tiefensuche)
+    }
+    int top = 0;
+    for (auto& t : g_toc) top += t.depth == 0;
+    if (top == 1)
+        for (auto& t : g_toc)
+            if (t.depth == 0) t.open = true;  // einzelnes Wurzelelement direkt aufklappen
+    RebuildTocVis();
+}
+
+static void SetTocOpen(bool open) {
+    if (!g_hasDoc) return;
+    if (open && !g_tocLoaded) LoadToc();
+    g_tocOpen = open;
+    if (g_zoomMode != ZM_CUSTOM) SetZoom(FitZoom(g_zoomMode), CenterX(), TB(), g_zoomMode);
+    else {
+        ClampScroll();
+        UpdateJobs();
+    }
     Invalidate();
 }
 
@@ -1139,6 +1553,8 @@ static void CreateDeviceIndependent() {
     fHead = MkFmt(disp, 20.0f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
     fSection = MkFmt(ui, 12.5f, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING);
     fSeg = MkFmt(ui, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
+    fItem = MkFmt(ui, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, true);
+    fIconSm = MkFmt(icon, 10.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
     // Logo (100×100-Box)
     g_logoPage = Poly({{29, 17}, {59, 17}, {74, 32}, {74, 83}, {29, 83}});
     g_logoFold = Poly({{59, 17}, {74, 32}, {59, 32}});
@@ -1207,7 +1623,6 @@ static float Measure(const std::wstring& s, IDWriteTextFormat* f) {
     l->Release();
     return m.widthIncludingTrailingWhitespace;
 }
-static bool In(const D2D1_RECT_F& r, float x, float y) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
 
 static void AddZone(const D2D1_RECT_F& r, int cmd, const wchar_t* tip) { g_zones.push_back({r, cmd, tip}); }
 
@@ -1272,6 +1687,10 @@ static void DrawToolbar() {
 
     IconBtn(D2D1::RectF(8, bt, 8 + bw, bb), CMD_OPEN, 0xE8E5, L"Öffnen (Strg+O)");
     float leftEnd = 8 + bw + 8;
+    if (g_hasDoc) {
+        IconBtn(D2D1::RectF(leftEnd - 6, bt, leftEnd - 6 + bw, bb), CMD_TOC, 0xE8FD, L"Inhaltsverzeichnis (Strg+B)", true, g_tocOpen);
+        leftEnd += bw + 2;
+    }
 
     // Rechte Gruppe (von rechts nach links)
     float x = std::min(W - 8, g_captionLeft - 10);  // Platz für die System-Fensterknöpfe (Mica-Modus)
@@ -1360,10 +1779,99 @@ static void DrawSearchPanel() {
     // Platzhalter linksbündig zeichnen (DrawField nutzt fUi für nicht zentriert)
 }
 
+static void DrawSelection(int i, const D2D1_RECT_F& r) {
+    TextPos a, b;
+    SelOrdered(a, b);
+    if (i < a.page || i > b.page) return;
+    const PageInfo& p = g_pages[i];
+    if (!p.textLoaded) return;
+    int n = (int)p.chars.size();
+    int s0 = i == a.page ? std::min(a.idx, n) : 0, e = i == b.page ? std::min(b.idx, n) : n;
+    float pw = r.right - r.left, ph = r.bottom - r.top;
+    SetC(T.accent, 0.34f);
+    D2D1_RECT_F cur{0, 0, 0, 0};
+    bool has = false;
+    auto flush = [&] {
+        if (has)
+            g_rt->FillRectangle(D2D1::RectF(r.left + cur.left * pw, r.top + cur.top * ph, r.left + cur.right * pw, r.top + cur.bottom * ph),
+                                g_br);
+    };
+    for (int k = s0; k < e; k++) {
+        const D2D1_RECT_F& c = p.chars[k].r;
+        if (c.right <= c.left) continue;
+        if (has) {
+            float ov = std::min(cur.bottom, c.bottom) - std::max(cur.top, c.top);
+            float mh = std::min(cur.bottom - cur.top, c.bottom - c.top);
+            if (ov > mh * 0.5f && c.left >= cur.left - 0.002f) {  // gleiche Zeile: zu einem Rechteck zusammenfassen
+                cur.right = std::max(cur.right, c.right);
+                cur.top = std::min(cur.top, c.top);
+                cur.bottom = std::max(cur.bottom, c.bottom);
+                continue;
+            }
+            flush();
+        }
+        cur = c;
+        has = true;
+    }
+    flush();
+}
+
+static void DrawToc() {
+    float W = ContentX0();
+    if (W <= 0) return;
+    float top = TB(), H = g_ch;
+    D2D1_RECT_F panel = D2D1::RectF(0, top, W, H);
+    Fill(panel, T.card);
+    Fill(D2D1::RectF(W - 1, top, W, H), T.cardLine);
+    AddZone(panel, CMD_TOC_PANEL, nullptr);
+    Text(L"INHALT", fSection, D2D1::RectF(18, top, W - 50, top + 44), T.accent);
+    IconBtn(D2D1::RectF(W - 44, top + 6, W - 10, top + 38), CMD_TOC_CLOSE, 0xE711, L"Schließen (Strg+B)");
+    float y0 = top + 44;
+    Fill(D2D1::RectF(12, y0 - 1, W - 12, y0), T.cardLine);
+    g_rt->PushAxisAlignedClip(D2D1::RectF(0, y0, W - 1, H), D2D1_ANTIALIAS_MODE_ALIASED);
+    if (g_toc.empty()) {
+        Text(L"Kein Inhaltsverzeichnis vorhanden", fSmall, D2D1::RectF(18, y0 + 10, W - 16, y0 + 34), T.dim);
+    } else {
+        const float RH = 30;
+        int visN = (int)g_tocVis.size();
+        float maxScroll = std::max(0.0f, visN * RH + 12 - (H - y0));
+        g_tocScroll = std::clamp(g_tocScroll, 0.0f, maxScroll);
+        int cur = CurrentPage(), curRow = -1;
+        for (int v = 0; v < visN; v++) {
+            int pg = g_toc[g_tocVis[v]].page;
+            if (pg >= 0 && pg <= cur) curRow = v;
+        }
+        for (int v = std::max(0, (int)(g_tocScroll / RH) - 1); v < visN; v++) {
+            float y = y0 + 6 + v * RH - g_tocScroll;
+            if (y > H) break;
+            const TocItem& t = g_toc[g_tocVis[v]];
+            D2D1_RECT_F row = D2D1::RectF(6, y, W - 8, y + RH - 2);
+            AddZone(row, CMD_TOC_ROW + v, nullptr);
+            if (v == curRow) {
+                FillR(row, 5, T.accent, 0.16f);
+                FillR(D2D1::RectF(6, y + 8, 9, y + RH - 10), 1.5f, T.accent);
+            }
+            if (g_hot == CMD_TOC_ROW + v) FillR(row, 5, T.text, g_pressed == CMD_TOC_ROW + v ? T.press : T.hover);
+            float x = 12 + std::min(t.depth, 8) * 14.0f;
+            if (t.kids) {
+                D2D1_RECT_F cr = D2D1::RectF(x, y + 3, x + 22, y + RH - 5);
+                AddZone(cr, CMD_TOC_CHEV + v, nullptr);
+                if (g_hot == CMD_TOC_CHEV + v) FillR(cr, 4, T.text, T.hover);
+                wchar_t g[2] = {(wchar_t)(t.open ? 0xE70D : 0xE76C), 0};
+                Text(g, fIconSm, cr, T.dim);
+            }
+            x += 24;
+            Text(t.title.empty() ? std::wstring(L"(ohne Titel)") : t.title, fItem, D2D1::RectF(x, y, W - 14, y + RH - 2),
+                 v == curRow ? T.text : T.text, v == curRow ? 1.0f : 0.85f);
+        }
+    }
+    g_rt->PopAxisAlignedClip();
+}
+
 static void DrawPages() {
     int a, b;
     VisibleRange(a, b);
-    D2D1_RECT_F clip = D2D1::RectF(0, TB(), g_cw, g_ch);
+    D2D1_RECT_F clip = D2D1::RectF(ContentX0(), TB(), g_cw, g_ch);
     g_rt->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
     double s = K() * g_dpi / 96.0;
     // Treffer-Index pro Seite (g_hits ist nach Seite sortiert)
@@ -1384,8 +1892,9 @@ static void DrawPages() {
             }
             g_rt->DrawBitmap(p.bmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
         } else {
-            Fill(r, S.night ? 0x1E1E1E : 0xFFFFFF);
+            Fill(r, S.pageColor == 2 ? 0x1E1E1E : S.pageColor == 1 ? 0xF4ECD8 : 0xFFFFFF);
         }
+        if (g_selActive) DrawSelection(i, r);
         // Suchtreffer
         if (!g_hits.empty()) {
             auto it = std::lower_bound(g_hits.begin(), g_hits.end(), i, [](const SearchHit& h, int pg) { return h.page < pg; });
@@ -1440,7 +1949,7 @@ static void DrawScrollbars() {
     double cwid = ContentW();
     if (g_hasDoc && cwid > ViewW() + 0.5) {
         float tw = (float)std::max(40.0, ViewW() * ViewW() / cwid);
-        float tx = (float)((ViewW() - tw) * (g_sx / MaxSX()));
+        float tx = ContentX0() + (float)((ViewW() - tw) * (g_sx / MaxSX()));
         FillR(D2D1::RectF(tx + 2, g_ch - 7, tx + tw - 2, g_ch - 3), 2, T.text, 0.35f);
     }
 }
@@ -1639,9 +2148,10 @@ static void DrawSettings() {
     segRow(L"Farbschema", {L"Wie Windows", L"Hell", L"Dunkel"}, S.theme, CMD_SET_THEME);
     toggleRow(L"Mica & integrierte Titelleiste", g_isWin11 ? L"Moderner Fensterstil von Windows 11" : L"Nur unter Windows 11 verfügbar",
               S.mica && g_isWin11, CMD_SET_MICA, g_isWin11);
-    toggleRow(L"Nachtmodus für Seiten", L"Stellt PDF-Seiten dunkel dar", S.night, CMD_SET_NIGHT);
+    segRow(L"Seitenfarbe  (Bilder bleiben unverändert)", {L"Normal", L"Sepia", L"Dunkel"}, S.pageColor, CMD_SET_PCOLOR);
     divider();
-    section(L"SCROLLEN");
+    section(L"BEDIENUNG");
+    segRow(L"Ziehen mit der linken Maustaste", {L"Text auswählen", L"Verschieben"}, S.mouseMode, CMD_SET_MOUSE);
     toggleRow(L"Sanftes Scrollen", nullptr, S.smooth, CMD_SET_SMOOTH);
     segRow(L"Scrollgeschwindigkeit", {L"Langsam", L"Normal", L"Schnell"}, S.speed, CMD_SET_SPEED);
     toggleRow(L"Horizontal umkehren", L"Richtung links/rechts tauschen", S.invH, CMD_SET_INVH);
@@ -1649,6 +2159,7 @@ static void DrawSettings() {
     divider();
     section(L"DOKUMENTE");
     segRow(L"Zoom beim Öffnen", {L"Zuletzt", L"Seitenbreite", L"Ganze Seite"}, S.openZoom, CMD_SET_OPEN);
+    toggleRow(L"Inhaltsverzeichnis anzeigen", L"Beim Öffnen, falls das PDF eines hat", S.tocAuto, CMD_SET_TOCAUTO);
     toggleRow(L"Leseposition merken", L"Öffnet Dateien an der letzten Stelle", S.remember, CMD_SET_REMEMBER);
     buttonRow(L"Verlauf", L"„Zuletzt geöffnet“ und Positionen", L"Leeren", CMD_SET_CLEARRECENT, !g_recent.empty());
     divider();
@@ -1665,7 +2176,7 @@ static void DrawSettings() {
     }
     buttonRow(L"PDF-Registrierung", L"FlinkPDF aus „Öffnen mit“ entfernen", L"Entfernen", CMD_SET_UNREG, sys::IsRegistered());
     y += 10;
-    Text(L"FlinkPDF 1.1  ·  Rendering: PDFium", fSmall, D2D1::RectF(x0, y, x1, y + 20), T.dim);
+    Text(L"FlinkPDF 1.2  ·  Rendering: PDFium", fSmall, D2D1::RectF(x0, y, x1, y + 20), T.dim);
     y += 32;
     g_panelContentH = y + g_panelScroll - top;
     g_rt->PopAxisAlignedClip();
@@ -1702,6 +2213,7 @@ static void Paint() {
     else if (!g_pwPath.empty()) DrawPassword();
     else DrawEmpty();
     if (g_hasDoc) DrawScrollbars();
+    if (g_hasDoc && ContentX0() > 0) DrawToc();
     if (g_hasDoc && g_searchOpen) DrawSearchPanel();
     if (g_panelOpen) DrawSettings();
     if (!g_fullscreen) DrawToolbar();
@@ -1750,13 +2262,28 @@ static int FrameY() { return SysMetric(SM_CYFRAME) + SysMetric(SM_CXPADDEDBORDER
 
 static void UpdateCaptionBounds() {
     g_captionLeft = 1e9f;
+    g_capRect = D2D1::RectF(0, 0, 0, 0);
     if (!g_customFrame) return;
     RECT r{}, wr{};
-    if (FAILED(DwmGetWindowAttribute(g_hwnd, 5 /*DWMWA_CAPTION_BUTTON_BOUNDS*/, &r, sizeof r)) || r.right <= r.left) return;
-    GetWindowRect(g_hwnd, &wr);
-    POINT o{0, 0};
-    ClientToScreen(g_hwnd, &o);
-    g_captionLeft = PxToDip(r.left + wr.left - o.x);
+    if (SUCCEEDED(DwmGetWindowAttribute(g_hwnd, 5 /*DWMWA_CAPTION_BUTTON_BOUNDS*/, &r, sizeof r)) && r.right > r.left) {
+        GetWindowRect(g_hwnd, &wr);
+        POINT o{0, 0};
+        ClientToScreen(g_hwnd, &o);
+        g_capRect = D2D1::RectF(PxToDip(r.left + wr.left - o.x), PxToDip(r.top + wr.top - o.y), PxToDip(r.right + wr.left - o.x),
+                                PxToDip(r.bottom + wr.top - o.y));
+    } else {
+        g_capRect = D2D1::RectF(g_cw - 138, 0, g_cw, 32);  // Standardmaße der Windows-11-Fensterknöpfe
+    }
+    g_capRect.top = std::min(g_capRect.top, 0.0f);
+    g_captionLeft = g_capRect.left;
+}
+
+// Welcher Fensterknopf liegt unter dem Punkt? (Minimieren | Maximieren | Schließen)
+static int CaptionHit(float x, float y) {
+    if (!g_customFrame || g_capRect.right <= g_capRect.left) return 0;
+    if (x < g_capRect.left || x >= g_capRect.right || y < g_capRect.top || y >= g_capRect.bottom) return 0;
+    int i = (int)((x - g_capRect.left) / ((g_capRect.right - g_capRect.left) / 3.0f));
+    return i <= 0 ? HTMINBUTTON : i == 1 ? HTMAXBUTTON : HTCLOSE;
 }
 
 // Windows 11: Fensterrahmen in den Clientbereich erweitern und Mica als Hintergrund der Werkzeugleiste nutzen.
@@ -1918,14 +2445,15 @@ static void ShowMenu(const D2D1_RECT_F& anchor) {
             break;
         case MNU_ABOUT:
             MessageBoxW(g_hwnd,
-                        L"FlinkPDF 1.1\nEin schneller, schlanker PDF-Viewer.\n\n"
+                        L"FlinkPDF 1.2\nEin schneller, schlanker PDF-Viewer.\n\n"
                         L"Tastenkürzel:\n"
                         L"Strg+O  Öffnen\t\tStrg+F  Suchen\n"
                         L"Strg+P  Drucken\t\tStrg+G  Gehe zu Seite\n"
                         L"Strg +/−  Zoom\t\tStrg+0  Seitenbreite\n"
                         L"Strg+1  100 %\t\tStrg+2  Ganze Seite\n"
                         L"F11  Vollbild\t\tStrg+W  Schließen\n"
-                        L"Strg+,  Einstellungen\n\n"
+                        L"Strg+,  Einstellungen\t\tStrg+B  Inhaltsverzeichnis\n"
+                        L"Strg+C  Kopieren\t\tStrg+A  Alles auswählen\n\n"
                         L"Rendering: PDFium (BSD-3-Clause / Apache-2.0)",
                         L"Über FlinkPDF", MB_OK | MB_ICONINFORMATION);
             break;
@@ -1946,9 +2474,39 @@ static void ShowZoomMenu(const D2D1_RECT_F& anchor) {
     if (c == MNU_FITWIDTH) ApplyFit(ZM_WIDTH);
     else if (c == MNU_FITPAGE) ApplyFit(ZM_PAGE);
     else if (c > MNU_ZOOM) {
-        SetZoom((c - MNU_ZOOM) / 100.0, ViewW() / 2, TB() + ViewH() / 2);
+        SetZoom((c - MNU_ZOOM) / 100.0, CenterX(), TB() + ViewH() / 2);
         sys::WriteDw(L"ZoomMode", ZM_CUSTOM);
         sys::WriteDw(L"Zoom", c - MNU_ZOOM);
+    }
+}
+
+static void ShowContextMenu(float x, float y) {
+    HMENU m = CreatePopupMenu();
+    std::wstring sel = SelectionText(200);
+    AppendMenuW(m, MF_STRING | (g_selActive ? 0 : MF_GRAYED), MNU_COPY, L"Kopieren\tStrg+C");
+    AppendMenuW(m, MF_STRING, MNU_SELALL, L"Alles auswählen\tStrg+A");
+    AppendMenuW(m, MF_STRING | (g_selActive && sel.size() < 120 ? 0 : MF_GRAYED), MNU_SEARCHSEL, L"Auswahl im Dokument suchen");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (g_tocOpen ? MF_CHECKED : 0), MNU_TOC, L"Inhaltsverzeichnis\tStrg+B");
+    POINT pt{DipToPx(x), DipToPx(y)};
+    ClientToScreen(g_hwnd, &pt);
+    int c = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, g_hwnd, nullptr);
+    DestroyMenu(m);
+    switch (c) {
+        case MNU_COPY: CopySelection(); break;
+        case MNU_SELALL: SelectAll(); break;
+        case MNU_TOC: SetTocOpen(!g_tocOpen); break;
+        case MNU_SEARCHSEL: {
+            std::wstring q;
+            for (wchar_t ch : sel) q.push_back(ch == L'\r' || ch == L'\n' || ch == L'\t' ? L' ' : ch);
+            while (!q.empty() && q.back() == L' ') q.pop_back();
+            while (!q.empty() && q.front() == L' ') q.erase(q.begin());
+            if (q.empty()) break;
+            g_searchText = q;
+            OpenSearch();
+            StartSearch();
+            break;
+        }
     }
 }
 
@@ -1984,12 +2542,10 @@ static void Execute(int cmd, const D2D1_RECT_F& r) {
         case CMD_SET_DIM: OpenPanel(false); break;
         case CMD_SET_PANEL: break;
         case CMD_SET_MICA: S.mica = !S.mica; S.Save(); ApplyFrame(); break;
-        case CMD_SET_NIGHT:
-            S.night = !S.night;
-            S.Save();
-            ReleaseBitmaps();
-            UpdateJobs();
-            break;
+        case CMD_TOC: SetTocOpen(!g_tocOpen); break;
+        case CMD_TOC_CLOSE: SetTocOpen(false); break;
+        case CMD_TOC_PANEL: break;
+        case CMD_SET_TOCAUTO: S.tocAuto = !S.tocAuto; S.Save(); break;
         case CMD_SET_SMOOTH: S.smooth = !S.smooth; S.Save(); break;
         case CMD_SET_INVH: S.invH = !S.invH; S.Save(); break;
         case CMD_SET_INVV: S.invV = !S.invV; S.Save(); break;
@@ -2010,7 +2566,23 @@ static void Execute(int cmd, const D2D1_RECT_F& r) {
             Toast(L"FlinkPDF ist nicht mehr als PDF-Programm registriert.");
             break;
         default:
-            if (cmd >= CMD_SET_THEME && cmd <= CMD_SET_THEME + 2) {
+            if (cmd >= CMD_TOC_CHEV && cmd < CMD_TOC_CHEV + (int)g_tocVis.size()) {
+                TocItem& t = g_toc[g_tocVis[cmd - CMD_TOC_CHEV]];
+                t.open = !t.open;
+                RebuildTocVis();
+            } else if (cmd >= CMD_TOC_ROW && cmd < CMD_TOC_ROW + (int)g_tocVis.size()) {
+                const TocItem& t = g_toc[g_tocVis[cmd - CMD_TOC_ROW]];
+                if (t.page >= 0 && t.page < N()) GoToPage(t.page, t.y);
+            } else if (cmd >= CMD_SET_PCOLOR && cmd <= CMD_SET_PCOLOR + 2) {
+                S.pageColor = cmd - CMD_SET_PCOLOR;
+                S.Save();
+                ReleaseBitmaps();
+                UpdateJobs();
+            } else if (cmd >= CMD_SET_MOUSE && cmd <= CMD_SET_MOUSE + 1) {
+                S.mouseMode = cmd - CMD_SET_MOUSE;
+                S.Save();
+                UpdateJobs();
+            } else if (cmd >= CMD_SET_THEME && cmd <= CMD_SET_THEME + 2) {
                 S.theme = cmd - CMD_SET_THEME;
                 S.Save();
                 ApplyTheme();
@@ -2169,11 +2741,14 @@ static void OnKey(WPARAM vk) {
             case 'F': OpenSearch(); return;
             case 'G': if (g_hasDoc) FocusField(FLD_PAGE); return;
             case VK_OEM_COMMA: OpenPanel(!(g_panelOpen && g_panelWant)); return;
+            case 'C': if (g_selActive) CopySelection(); return;
+            case 'A': SelectAll(); return;
+            case 'B': if (g_hasDoc) SetTocOpen(!g_tocOpen); return;
             case VK_OEM_PLUS: case VK_ADD: ZoomStep(+1); return;
             case VK_OEM_MINUS: case VK_SUBTRACT: ZoomStep(-1); return;
             case '0': case VK_NUMPAD0: ApplyFit(ZM_WIDTH); return;
             case '1': case VK_NUMPAD1:
-                SetZoom(1.0, ViewW() / 2, TB() + ViewH() / 2);
+                SetZoom(1.0, CenterX(), TB() + ViewH() / 2);
                 sys::WriteDw(L"ZoomMode", ZM_CUSTOM); sys::WriteDw(L"Zoom", 100);
                 return;
             case '2': case VK_NUMPAD2: ApplyFit(ZM_PAGE); return;
@@ -2186,6 +2761,7 @@ static void OnKey(WPARAM vk) {
         case VK_F3: NextHit(shift ? -1 : +1); return;
         case VK_ESCAPE:
             if (g_panelOpen) OpenPanel(false);
+            else if (g_selActive) { g_selActive = false; Invalidate(); }
             else if (g_fullscreen) ToggleFullscreen();
             else if (g_searchOpen) CloseSearch();
             return;
@@ -2224,6 +2800,16 @@ static void OnMouseMove(float x, float y) {
         }
         return;
     }
+    if (g_selecting) {
+        g_selMx = x;
+        g_selMy = y;
+        UpdateSelectionFromMouse();
+        bool edge = y < TB() + 24 || y > g_ch - 24;  // am Rand automatisch weiterscrollen
+        if (edge) SetTimer(g_hwnd, TIMER_AUTOSCROLL, 16, nullptr);
+        else KillTimer(g_hwnd, TIMER_AUTOSCROLL);
+        SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+        return;
+    }
     if (g_panning) {
         POINT p;
         GetCursorPos(&p);
@@ -2248,6 +2834,12 @@ static void OnMouseMove(float x, float y) {
     if (z && (z->cmd == CMD_SEARCHFIELD || z->cmd == CMD_PWFIELD)) cur = IDC_IBEAM;
     else if (z) cur = IDC_ARROW;
     else if (!sb && LinkAt(x, y)) cur = IDC_HAND;
+    else if (!sb && S.mouseMode == 0) {
+        int pg = PageAtPoint(x, y);
+        bool on = false;
+        if (pg >= 0 && g_pages[pg].textLoaded) CaretAt(pg, x, y, &on);
+        if (on) cur = IDC_IBEAM;
+    }
     SetCursor(LoadCursor(nullptr, cur));
 }
 
@@ -2278,7 +2870,30 @@ static void OnLButtonDown(float x, float y) {
         Invalidate();
         return;
     }
-    if (g_hasDoc && y >= TB()) {
+    if (g_hasDoc && y >= TB() && x >= ContentX0()) {
+        int pg = PageAtPoint(x, y);
+        bool shift = GetKeyState(VK_SHIFT) < 0;
+        if (pg >= 0 && (S.mouseMode == 0 || shift)) {
+            EnsureText(pg);
+            bool on = false;
+            int c = CaretAt(pg, x, y, &on);
+            if ((shift && g_selActive) || on || (shift && S.mouseMode == 1)) {
+                if (!(shift && g_selActive)) g_selA = {pg, c};
+                g_selB = {pg, c};
+                g_selActive = g_selA.page != g_selB.page || g_selA.idx != g_selB.idx;
+                g_selecting = true;
+                g_selMx = x;
+                g_selMy = y;
+                StopAnim();
+                SetCapture(g_hwnd);
+                Invalidate();
+                return;
+            }
+        }
+        if (g_selActive) {
+            g_selActive = false;
+            Invalidate();
+        }
         g_panning = true;
         g_panMoved = false;
         GetCursorPos(&g_panStart);
@@ -2292,10 +2907,18 @@ static void OnLButtonDown(float x, float y) {
 static void OnLButtonUp(float x, float y) {
     // Zustand sichern – ReleaseCapture löst WM_CAPTURECHANGED aus, das ihn zurücksetzt
     int pressed = g_pressed;
-    bool sbDrag = g_sbDrag, panning = g_panning;
+    bool sbDrag = g_sbDrag, panning = g_panning, selecting = g_selecting;
     g_pressed = CMD_NONE;
-    g_sbDrag = g_panning = false;
+    g_sbDrag = g_panning = g_selecting = false;
     if (GetCapture() == g_hwnd) ReleaseCapture();
+    if (selecting) {
+        KillTimer(g_hwnd, TIMER_AUTOSCROLL);
+        if (!g_selActive) {  // nur geklickt: ggf. Link öffnen
+            const LinkInfo* l = LinkAt(x, y);
+            if (l) { LinkInfo copy = *l; FollowLink(copy); }
+        }
+        return;
+    }
     if (pressed != CMD_NONE) {
         const Zone* z = ZoneAt(x, y);
         if (z && z->cmd == pressed) {
@@ -2330,6 +2953,13 @@ static void OnWheel(int delta, bool horizontal, float x, float y) {
         return;
     }
     if (!g_hasDoc) return;
+    if (x < ContentX0() && y >= TB()) {  // Inhaltsverzeichnis scrollen
+        if (!horizontal) {
+            g_tocScroll -= delta / 120.0f * 90.0f;
+            Invalidate();
+        }
+        return;
+    }
     bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0;
     if (ctrl && !horizontal) {
         SetZoom(g_zoom * std::pow(1.12, delta / 120.0), x, y);
@@ -2360,7 +2990,24 @@ static void OnWheel(int delta, bool horizontal, float x, float y) {
 // ============================================================================
 static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (g_customFrame) {
-        // System-Fensterknöpfe (Minimieren/Maximieren/Schließen inkl. Snap-Layouts) zeichnet und bedient DWM
+        // Fensterknöpfe selbst auslösen: DefWindowProc kennt ohne klassische Titelleiste deren Position nicht
+        // und ignoriert sonst den Klick (u. a. auf das X).
+        bool capBtn = wp == HTCLOSE || wp == HTMINBUTTON || wp == HTMAXBUTTON;
+        if ((msg == WM_NCLBUTTONDOWN || msg == WM_NCLBUTTONDBLCLK) && capBtn) {
+            g_ncPressed = (int)wp;
+            return 0;
+        }
+        if (msg == WM_NCLBUTTONUP && capBtn) {
+            int pressed = g_ncPressed;
+            g_ncPressed = 0;
+            if (pressed == (int)wp) {
+                if (wp == HTCLOSE) PostMessageW(h, WM_SYSCOMMAND, SC_CLOSE, 0);
+                else if (wp == HTMINBUTTON) PostMessageW(h, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+                else PostMessageW(h, WM_SYSCOMMAND, IsZoomed(h) ? SC_RESTORE : SC_MAXIMIZE, 0);
+            }
+            return 0;
+        }
+        // Darstellung/Hover der Knöpfe (inkl. Snap-Layouts) übernimmt DWM
         LRESULT lr = 0;
         if (DwmDefWindowProc(h, msg, wp, lp, &lr)) return lr;
     }
@@ -2381,8 +3028,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 if (r != HTCLIENT) return r;
                 POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
                 ScreenToClient(h, &pt);
-                if (!IsZoomed(h) && pt.y < DipToPx(5)) return HTTOP;
                 float x = PxToDip(pt.x), y = PxToDip(pt.y);
+                if (int c = CaptionHit(x, y)) return c;
+                if (!IsZoomed(h) && pt.y < DipToPx(5)) return HTTOP;
                 if (y < TB() && !ZoneAt(x, y)) return HTCAPTION;  // freie Fläche der Leiste: Fenster ziehen
                 return HTCLIENT;
             }
@@ -2431,7 +3079,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_hasDoc) {
                 if (g_zoomMode != ZM_CUSTOM && std::fabs(FitZoom(g_zoomMode) - g_zoom) > 1e-4) {
                     int m = g_zoomMode;
-                    SetZoom(FitZoom(m), ViewW() / 2, TB(), m);
+                    SetZoom(FitZoom(m), CenterX(), TB(), m);
                 } else {
                     ClampScroll();
                     UpdateJobs();
@@ -2474,10 +3122,26 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_hot != CMD_NONE || g_sbHover) { g_hot = CMD_NONE; g_sbHover = false; Invalidate(); }
             UpdateTooltip(nullptr);
             return 0;
-        case WM_LBUTTONDOWN:
-        case WM_LBUTTONDBLCLK: OnLButtonDown(PxToDip(GET_X_LPARAM(lp)), PxToDip(GET_Y_LPARAM(lp))); return 0;
+        case WM_LBUTTONDOWN: OnLButtonDown(PxToDip(GET_X_LPARAM(lp)), PxToDip(GET_Y_LPARAM(lp))); return 0;
+        case WM_LBUTTONDBLCLK: {
+            float x = PxToDip(GET_X_LPARAM(lp)), y = PxToDip(GET_Y_LPARAM(lp));
+            int pg = ZoneAt(x, y) ? -1 : PageAtPoint(x, y);
+            if (pg >= 0) SelectWordAt(pg, x, y);  // Doppelklick markiert ein Wort
+            else OnLButtonDown(x, y);
+            return 0;
+        }
+        case WM_RBUTTONUP: {
+            float x = PxToDip(GET_X_LPARAM(lp)), y = PxToDip(GET_Y_LPARAM(lp));
+            if (g_hasDoc && !ZoneAt(x, y) && PageAtPoint(x, y) >= 0) {
+                ShowContextMenu(x, y);
+                return 0;
+            }
+            break;
+        }
         case WM_LBUTTONUP: OnLButtonUp(PxToDip(GET_X_LPARAM(lp)), PxToDip(GET_Y_LPARAM(lp))); return 0;
         case WM_CAPTURECHANGED:
+            g_selecting = false;
+            KillTimer(h, TIMER_AUTOSCROLL);
             g_panning = false;
             g_sbDrag = false;
             if (g_pressed != CMD_NONE) { g_pressed = CMD_NONE; Invalidate(); }
@@ -2568,6 +3232,20 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     g_toast.clear();
                     Invalidate();
                     break;
+                case TIMER_AUTOSCROLL: {
+                    if (!g_selecting) {
+                        KillTimer(h, TIMER_AUTOSCROLL);
+                        break;
+                    }
+                    float y = g_selMy;
+                    double dy = y < TB() + 24 ? -(TB() + 24 - y) * 0.6 - 4 : y > g_ch - 24 ? (y - (g_ch - 24)) * 0.6 + 4 : 0;
+                    if (dy == 0) KillTimer(h, TIMER_AUTOSCROLL);
+                    else {
+                        ScrollBy(0, dy, false);
+                        UpdateSelectionFromMouse();
+                    }
+                    break;
+                }
                 case TIMER_PANEL: {
                     LARGE_INTEGER now, fq;
                     QueryPerformanceCounter(&now);
@@ -2591,7 +3269,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_APP_RENDERED: {
             RenderResult* r = (RenderResult*)lp;
-            if (r->gen == g_docGen && g_hasDoc && r->page < N() && r->night == S.night) {
+            if (r->gen == g_docGen && g_hasDoc && r->page < N() && r->color == S.pageColor) {
                 PageInfo& p = g_pages[r->page];
                 if (r->hasLinks && !p.linksLoaded) {
                     p.links = std::move(r->links);
@@ -2633,6 +3311,16 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 if (r->done) g_searchDone = true;
                 Invalidate();
+            }
+            delete r;
+            return 0;
+        }
+        case WM_APP_TEXT: {
+            TextResult* r = (TextResult*)lp;
+            if (r->gen == g_docGen && g_hasDoc && r->page < N() && !g_pages[r->page].textLoaded) {
+                g_pages[r->page].chars = std::move(r->chars);
+                g_pages[r->page].textLoaded = true;
+                if (g_selActive) Invalidate();
             }
             delete r;
             return 0;

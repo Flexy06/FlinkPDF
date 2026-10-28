@@ -1,4 +1,4 @@
-FlinkPDF 1.1 – schneller, schlanker PDF-Viewer für Windows 10/11
+FlinkPDF 1.2 – schneller, schlanker PDF-Viewer für Windows 10/11
 ================================================================
 
 INSTALLATION
@@ -22,7 +22,10 @@ BEDIENUNG
   Strg+P        Drucken
   F11           Vollbild (Esc beendet)
   Strg+,        Einstellungen (Design, Scrollrichtung, Nachtmodus …)
-  Maus ziehen   Dokument verschieben; Links im PDF sind anklickbar
+  Maus ziehen   auf Text: markieren (Doppelklick = Wort), sonst verschieben
+  Strg+C / A    Kopieren / Alles auswählen (auch per Rechtsklick)
+  Strg+B        Inhaltsverzeichnis ein-/ausblenden
+  Links im PDF sind anklickbar
 
 DEINSTALLATION
   Einstellungen -> Apps -> Installierte Apps -> FlinkPDF -> Deinstallieren

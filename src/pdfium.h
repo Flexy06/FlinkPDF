@@ -11,6 +11,8 @@ typedef void* DEST;
 typedef void* ACTION;
 typedef void* TEXTPG;
 typedef void* SCH;
+typedef void* OBJ;
+typedef void* BOOKMARK;
 
 struct FILEACCESS {
     unsigned long len;
@@ -19,11 +21,13 @@ struct FILEACCESS {
 };
 struct SIZEF { float w, h; };
 struct RECTF { float l, t, r, b; };
+struct MATRIX { float a, b, c, d, e, f; };
 
 enum { BITMAP_BGRx = 3 };
 enum { F_ANNOT = 0x01, F_LCD_TEXT = 0x02, F_PRINTING = 0x800 };
 enum { ERR_PASSWORD = 4 };
 enum { ACTION_GOTO = 1, ACTION_URI = 3 };
+enum { OBJ_IMAGE = 3, OBJ_FORM = 5 };
 }
 
 struct Pdfium {
@@ -60,6 +64,21 @@ struct Pdfium {
     void (*TextFindClose)(pdf::SCH);
     int (*TextCountRects)(pdf::TEXTPG, int, int);
     int (*TextGetRect)(pdf::TEXTPG, int, double*, double*, double*, double*);
+    int (*TextCountChars)(pdf::TEXTPG);
+    unsigned int (*TextGetUnicode)(pdf::TEXTPG, int);
+    int (*TextGetLooseCharBox)(pdf::TEXTPG, int, pdf::RECTF*);
+    int (*PageCountObjects)(pdf::PAGE);
+    pdf::OBJ (*PageGetObject)(pdf::PAGE, int);
+    int (*ObjGetType)(pdf::OBJ);
+    int (*ObjGetBounds)(pdf::OBJ, float*, float*, float*, float*);
+    int (*ObjGetMatrix)(pdf::OBJ, pdf::MATRIX*);
+    int (*FormCountObjects)(pdf::OBJ);
+    pdf::OBJ (*FormGetObject)(pdf::OBJ, unsigned long);
+    pdf::BOOKMARK (*BookmarkFirstChild)(pdf::DOC, pdf::BOOKMARK);
+    pdf::BOOKMARK (*BookmarkNextSibling)(pdf::DOC, pdf::BOOKMARK);
+    unsigned long (*BookmarkGetTitle)(pdf::BOOKMARK, void*, unsigned long);
+    pdf::DEST (*BookmarkGetDest)(pdf::DOC, pdf::BOOKMARK);
+    pdf::ACTION (*BookmarkGetAction)(pdf::BOOKMARK);
 
     template <class F> bool Get(F& fn, const char* name) {
         fn = reinterpret_cast<F>(reinterpret_cast<void*>(GetProcAddress(dll, name)));
@@ -102,6 +121,21 @@ struct Pdfium {
         ok &= Get(TextFindClose, "FPDFText_FindClose");
         ok &= Get(TextCountRects, "FPDFText_CountRects");
         ok &= Get(TextGetRect, "FPDFText_GetRect");
+        ok &= Get(TextCountChars, "FPDFText_CountChars");
+        ok &= Get(TextGetUnicode, "FPDFText_GetUnicode");
+        ok &= Get(TextGetLooseCharBox, "FPDFText_GetLooseCharBox");
+        ok &= Get(PageCountObjects, "FPDFPage_CountObjects");
+        ok &= Get(PageGetObject, "FPDFPage_GetObject");
+        ok &= Get(ObjGetType, "FPDFPageObj_GetType");
+        ok &= Get(ObjGetBounds, "FPDFPageObj_GetBounds");
+        ok &= Get(ObjGetMatrix, "FPDFPageObj_GetMatrix");
+        ok &= Get(FormCountObjects, "FPDFFormObj_CountObjects");
+        ok &= Get(FormGetObject, "FPDFFormObj_GetObject");
+        ok &= Get(BookmarkFirstChild, "FPDFBookmark_GetFirstChild");
+        ok &= Get(BookmarkNextSibling, "FPDFBookmark_GetNextSibling");
+        ok &= Get(BookmarkGetTitle, "FPDFBookmark_GetTitle");
+        ok &= Get(BookmarkGetDest, "FPDFBookmark_GetDest");
+        ok &= Get(BookmarkGetAction, "FPDFBookmark_GetAction");
         return ok;
     }
 };

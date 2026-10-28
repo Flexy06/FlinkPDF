@@ -11,12 +11,13 @@ Acrobat und Co. brauchen gefühlt ewig zum Starten. FlinkPDF ist eine native Win
 - Fortlaufendes Scrollen mit sanfter Animation, Ziehen mit der Maus, Touch- und Touchpad-Gesten
 - Zoom (Strg+Mausrad, Pinch, Menü), „Seitenbreite“ und „Ganze Seite“ – die Einstellung wird gemerkt
 - Suche im Dokument mit Trefferhervorhebung (Strg+F, F3)
-- Klickbare Links und Inhaltsverzeichnisse
+- Text markieren und kopieren (Ziehen, Doppelklick für ein Wort, Strg+A/Strg+C, Rechtsklick-Menü)
+- Inhaltsverzeichnis als Seitenleiste (Strg+B), klickbare Links
 - Seitensprung (Seitenzahl einfach eintippen), Vollbild (F11), Drucken (Strg+P)
 - Passwortgeschützte PDFs
 - Modernes Windows-11-Design: Mica-Hintergrund, Werkzeugleiste in der Titelleiste, Systemakzentfarbe
-- Heller und dunkler Modus (automatisch oder fest), Nachtmodus für Seiten
-- Einstellungen (Strg+,): Scrollrichtung horizontal/vertikal umkehren, Scrollgeschwindigkeit, sanftes Scrollen, Zoom beim Öffnen, Leseposition merken
+- Heller und dunkler Modus (automatisch oder fest); Seitenfarbe Normal/Sepia/Dunkel – Bilder bleiben dabei unverändert
+- Einstellungen (Strg+,): Maus-Modus (Text auswählen/Verschieben), Scrollrichtung horizontal/vertikal umkehren, Scrollgeschwindigkeit, sanftes Scrollen, Zoom beim Öffnen, Inhaltsverzeichnis automatisch, Leseposition merken
 - „Zuletzt geöffnet“, Drag & Drop
 - Ein-Klick-Installation nach `%LOCALAPPDATA%\Programs` (ohne Adminrechte) inkl. Startmenü-Eintrag, Registrierung als PDF-App und Deinstallation über die Windows-Einstellungen
 
@@ -41,6 +42,8 @@ Kommandozeile: `FlinkPDF.exe --install`, `--uninstall`, `--register`, `--unregis
 | F11 | Vollbild |
 | Strg+W | Fenster schließen |
 | Strg+, | Einstellungen |
+| Strg+B | Inhaltsverzeichnis |
+| Strg+C / Strg+A | Kopieren / Alles auswählen |
 
 ## Selbst bauen
 
