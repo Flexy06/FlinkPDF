@@ -13,6 +13,7 @@ typedef void* TEXTPG;
 typedef void* SCH;
 typedef void* OBJ;
 typedef void* BOOKMARK;
+typedef void* ANNOT;
 
 struct FILEACCESS {
     unsigned long len;
@@ -22,12 +23,19 @@ struct FILEACCESS {
 struct SIZEF { float w, h; };
 struct RECTF { float l, t, r, b; };
 struct MATRIX { float a, b, c, d, e, f; };
+struct POINTF { float x, y; };
+struct FILEWRITE {
+    int version;
+    int (*WriteBlock)(FILEWRITE* self, const void* data, unsigned long size);
+};
 
 enum { BITMAP_BGRx = 3 };
 enum { F_ANNOT = 0x01, F_LCD_TEXT = 0x02, F_PRINTING = 0x800 };
 enum { ERR_PASSWORD = 4 };
 enum { ACTION_GOTO = 1, ACTION_URI = 3 };
 enum { OBJ_IMAGE = 3, OBJ_FORM = 5 };
+enum { ANNOT_INK = 15, ANNOT_FLAG_PRINT = 4 };
+enum { SAVE_INCREMENTAL = 1, SAVE_NO_INCREMENTAL = 2 };
 }
 
 struct Pdfium {
@@ -79,6 +87,21 @@ struct Pdfium {
     unsigned long (*BookmarkGetTitle)(pdf::BOOKMARK, void*, unsigned long);
     pdf::DEST (*BookmarkGetDest)(pdf::DOC, pdf::BOOKMARK);
     pdf::ACTION (*BookmarkGetAction)(pdf::BOOKMARK);
+    pdf::ANNOT (*PageCreateAnnot)(pdf::PAGE, int);
+    int (*AnnotAddInkStroke)(pdf::ANNOT, const pdf::POINTF*, size_t);
+    int (*AnnotSetColor)(pdf::ANNOT, int, unsigned int, unsigned int, unsigned int, unsigned int);
+    int (*AnnotSetBorder)(pdf::ANNOT, float, float, float);
+    int (*AnnotSetRect)(pdf::ANNOT, const pdf::RECTF*);
+    int (*AnnotSetFlags)(pdf::ANNOT, int);
+    void (*PageCloseAnnot)(pdf::ANNOT);
+    int (*PageGetAnnotCount)(pdf::PAGE);
+    pdf::ANNOT (*PageGetAnnot)(pdf::PAGE, int);
+    int (*AnnotGetSubtype)(pdf::ANNOT);
+    unsigned long (*AnnotGetInkListCount)(pdf::ANNOT);
+    unsigned long (*AnnotGetInkListPath)(pdf::ANNOT, unsigned long, pdf::POINTF*, unsigned long);
+    int (*PageRemoveAnnot)(pdf::PAGE, int);
+    int (*DeviceToPage)(pdf::PAGE, int, int, int, int, int, int, int, double*, double*);
+    int (*SaveAsCopy)(pdf::DOC, pdf::FILEWRITE*, unsigned long);
 
     template <class F> bool Get(F& fn, const char* name) {
         fn = reinterpret_cast<F>(reinterpret_cast<void*>(GetProcAddress(dll, name)));
@@ -136,6 +159,21 @@ struct Pdfium {
         ok &= Get(BookmarkGetTitle, "FPDFBookmark_GetTitle");
         ok &= Get(BookmarkGetDest, "FPDFBookmark_GetDest");
         ok &= Get(BookmarkGetAction, "FPDFBookmark_GetAction");
+        ok &= Get(PageCreateAnnot, "FPDFPage_CreateAnnot");
+        ok &= Get(AnnotAddInkStroke, "FPDFAnnot_AddInkStroke");
+        ok &= Get(AnnotSetColor, "FPDFAnnot_SetColor");
+        ok &= Get(AnnotSetBorder, "FPDFAnnot_SetBorder");
+        ok &= Get(AnnotSetRect, "FPDFAnnot_SetRect");
+        ok &= Get(AnnotSetFlags, "FPDFAnnot_SetFlags");
+        ok &= Get(PageCloseAnnot, "FPDFPage_CloseAnnot");
+        ok &= Get(PageGetAnnotCount, "FPDFPage_GetAnnotCount");
+        ok &= Get(PageGetAnnot, "FPDFPage_GetAnnot");
+        ok &= Get(AnnotGetSubtype, "FPDFAnnot_GetSubtype");
+        ok &= Get(AnnotGetInkListCount, "FPDFAnnot_GetInkListCount");
+        ok &= Get(AnnotGetInkListPath, "FPDFAnnot_GetInkListPath");
+        ok &= Get(PageRemoveAnnot, "FPDFPage_RemoveAnnot");
+        ok &= Get(DeviceToPage, "FPDF_DeviceToPage");
+        ok &= Get(SaveAsCopy, "FPDF_SaveAsCopy");
         return ok;
     }
 };

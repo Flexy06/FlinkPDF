@@ -1,4 +1,4 @@
-FlinkPDF 1.2 – schneller, schlanker PDF-Viewer für Windows 10/11
+FlinkPDF 1.3 – schneller, schlanker PDF-Viewer für Windows 10/11
 ================================================================
 
 INSTALLATION
@@ -26,6 +26,24 @@ BEDIENUNG
   Strg+C / A    Kopieren / Alles auswählen (auch per Rechtsklick)
   Strg+B        Inhaltsverzeichnis ein-/ausblenden
   Links im PDF sind anklickbar
+
+ZEICHNEN
+  D             Zeichenmodus ein/aus (Leiste oben: Stift, Textmarker,
+                Radierer, Farben, Strichstärke)
+  P / H / E     Stift / Textmarker / Radierer
+  Strg+Z        Rückgängig
+  Strg+S        Zeichnung in die PDF speichern (als PDF-Anmerkung, auch
+                in Acrobat & Co. sichtbar). Strg+Umschalt+S = Speichern unter
+  Stift:        Radiererende/Radierer-Taste = radieren, Seitentaste + Ziehen =
+                Text markieren, Seitentaste + Tippen = Kontextmenü
+  Ungespeicherte Zeichnungen: Titel zeigt "•", beim Schließen kommt eine Rückfrage.
+
+PRÄSENTATION
+  F5            Präsentation starten (Vollbild, eine Seite auf Schwarz)
+  -> / Leertaste / Klick / Mausrad   nächste Seite
+  <- / Rechtsklick                   vorherige Seite
+  L Laserpointer   D Zeichnen   B schwarzer / W weißer Bildschirm
+  Esc           beenden
 
 DEINSTALLATION
   Einstellungen -> Apps -> Installierte Apps -> FlinkPDF -> Deinstallieren

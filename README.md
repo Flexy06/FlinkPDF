@@ -14,6 +14,9 @@ Acrobat und Co. brauchen gefühlt ewig zum Starten. FlinkPDF ist eine native Win
 - Text markieren und kopieren (Ziehen, Doppelklick für ein Wort, Strg+A/Strg+C, Rechtsklick-Menü)
 - Inhaltsverzeichnis als Seitenleiste (Strg+B), klickbare Links
 - Seitensprung (Seitenzahl einfach eintippen), Vollbild (F11), Drucken (Strg+P)
+- **Zeichnen** (D): Stift, Textmarker und Radierer mit Farben und Strichstärken, Rückgängig (Strg+Z). Strg+S speichert die Zeichnung als echte PDF-Anmerkung in die Datei – sichtbar auch in Acrobat, Edge & Co. Optional malt ein Eingabestift direkt, ohne Zeichenmodus.
+- **Stifttasten:** Radiererende bzw. Radierer-Taste radiert (auch ohne Zeichenmodus), Seitentaste + Ziehen markiert Text, Seitentaste + Tippen öffnet das Kontextmenü, Doppeltippen markiert ein Wort
+- **Präsentationsmodus** (F5): Seite bildschirmfüllend auf Schwarz, Blättern per Pfeiltasten/Leertaste/Klick/Mausrad, Laserpointer (L), Zeichnen während der Präsentation (D), schwarzer/weißer Bildschirm (B/W)
 - Passwortgeschützte PDFs
 - Modernes Windows-11-Design: Mica-Hintergrund, Werkzeugleiste in der Titelleiste, Systemakzentfarbe
 - Heller und dunkler Modus (automatisch oder fest); Seitenfarbe Normal/Sepia/Dunkel – Bilder bleiben dabei unverändert
@@ -44,6 +47,12 @@ Kommandozeile: `FlinkPDF.exe --install`, `--uninstall`, `--register`, `--unregis
 | Strg+, | Einstellungen |
 | Strg+B | Inhaltsverzeichnis |
 | Strg+C / Strg+A | Kopieren / Alles auswählen |
+| D | Zeichenmodus ein/aus (P Stift, H Textmarker, E Radierer) |
+| Strg+Z | Letzten Strich rückgängig |
+| Strg+S / Strg+Umschalt+S | Zeichnung in die PDF speichern / Speichern unter |
+| F5 | Präsentation starten/beenden |
+
+**In der Präsentation:** →/↓/Leertaste/Klick = weiter, ←/↑/Rechtsklick = zurück, Pos1/Ende, L Laserpointer, D Zeichnen, B schwarzer / W weißer Bildschirm, Esc beendet.
 
 ## Selbst bauen
 

@@ -41,26 +41,32 @@
 #define WM_APP_TOAST (WM_APP + 3)
 #define WM_APP_TEXT (WM_APP + 4)
 
-enum { TIMER_ANIM = 1, TIMER_ZOOM = 2, TIMER_SEARCH = 3, TIMER_TOAST = 4, TIMER_CARET = 5, TIMER_PANEL = 6, TIMER_AUTOSCROLL = 7 };
+enum { TIMER_ANIM = 1, TIMER_ZOOM = 2, TIMER_SEARCH = 3, TIMER_TOAST = 4, TIMER_CARET = 5, TIMER_PANEL = 6, TIMER_AUTOSCROLL = 7,
+       TIMER_CURSOR = 8 };
 
 enum Cmd {
     CMD_NONE = 0, CMD_OPEN, CMD_PREV, CMD_NEXT, CMD_PAGEBOX, CMD_ZOOMOUT, CMD_ZOOMIN, CMD_ZOOMBOX, CMD_FIT,
     CMD_SEARCH, CMD_PRINT, CMD_MENU, CMD_SETDEFAULT, CMD_SEARCHFIELD, CMD_SEARCH_PREV, CMD_SEARCH_NEXT,
     CMD_SEARCH_CLOSE, CMD_PWFIELD, CMD_PWOK, CMD_PWCANCEL, CMD_SETTINGS, CMD_TOC, CMD_TOC_CLOSE, CMD_TOC_PANEL,
+    CMD_INK, CMD_PRESENT, CMD_INK_BAR, CMD_INK_UNDO, CMD_INK_SAVE, CMD_INK_CLOSE,
+    CMD_PRES_PREV, CMD_PRES_NEXT, CMD_PRES_LASER, CMD_PRES_EXIT, CMD_PRES_BAR,
     CMD_RECENT = 100,  // + Index
     // Einstellungen
     CMD_SET_PANEL = 200, CMD_SET_CLOSE, CMD_SET_MICA, CMD_SET_NIGHT, CMD_SET_SMOOTH, CMD_SET_INVH, CMD_SET_INVV,
-    CMD_SET_REMEMBER, CMD_SET_CLEARRECENT, CMD_SET_UNREG, CMD_SET_DIM, CMD_SET_TOCAUTO,
+    CMD_SET_REMEMBER, CMD_SET_CLEARRECENT, CMD_SET_UNREG, CMD_SET_DIM, CMD_SET_TOCAUTO, CMD_SET_PEN,
     CMD_SET_THEME = 230,  // + 0..2
     CMD_SET_SPEED = 240,  // + 0..2
     CMD_SET_OPEN = 250,   // + 0..2
     CMD_SET_PCOLOR = 260, // + 0..2
     CMD_SET_MOUSE = 270,  // + 0..1
+    CMD_INK_TOOL = 280,   // + 0..2 (Stift, Marker, Radierer)
+    CMD_INK_COLOR = 290,  // + 0..4
+    CMD_INK_WIDTH = 300,  // + 0..2
     CMD_TOC_ROW = 20000,  // + sichtbare Zeile
     CMD_TOC_CHEV = 60000, // + sichtbare Zeile (Auf-/Zuklappen)
     // Menübefehle
     MNU_DEFAULT = 1000, MNU_FULLSCREEN, MNU_LOCATION, MNU_UNREGISTER, MNU_ABOUT, MNU_OPENWITH, MNU_SETTINGS, MNU_COPY,
-    MNU_SELALL, MNU_SEARCHSEL, MNU_TOC,
+    MNU_SELALL, MNU_SEARCHSEL, MNU_TOC, MNU_SAVE, MNU_SAVEAS, MNU_PRESENT,
     MNU_ZOOM = 1100,  // + Prozent
     MNU_FITWIDTH = 1099, MNU_FITPAGE = 1098,
 };
@@ -113,6 +119,9 @@ struct PageInfo {
     std::vector<LinkInfo> links;
     bool textLoaded = false;
     std::vector<CharBox> chars;  // Zeichen für die Textauswahl (erst bei Bedarf geladen)
+    int ver = 0;                 // erhöht, wenn sich die Seite ändert (z. B. Zeichnung entfernt)
+    bool inkLoaded = false;      // gespeicherte Freihand-Annotationen (für den Radierer)
+    std::vector<std::pair<int, std::vector<D2D1_POINT_2F>>> pdfInk;  // (Annotationsindex, Punkte in pt)
 };
 
 struct Job {
@@ -121,6 +130,7 @@ struct Job {
     int w = 0, h = 0;
     bool links = false;
     int color = 0;  // Seitenfarbe: 0 normal, 1 Sepia, 2 dunkel
+    int ver = 0;
 };
 
 struct TextResult {
@@ -136,6 +146,7 @@ struct RenderResult {
     bool hasLinks = false;
     std::vector<LinkInfo> links;
     int color = 0;
+    int ver = 0;
 };
 
 struct SearchHit {
@@ -162,6 +173,7 @@ struct Settings {
     int pageColor = 0;       // Seitenfarbe: 0 normal, 1 Sepia, 2 dunkel (Bilder bleiben unverändert)
     int mouseMode = 0;       // linke Maustaste: 0 = Text auswählen (auf Text), 1 = immer verschieben
     bool tocAuto = false;    // Inhaltsverzeichnis beim Öffnen anzeigen
+    bool penDraws = false;   // Stift-Eingabe zeichnet direkt (ohne Zeichenmodus)
     bool smooth = true;      // sanftes Scrollen
     int speed = 1;           // 0 langsam, 1 normal, 2 schnell
     bool invH = false;       // horizontale Scrollrichtung umkehren
@@ -175,6 +187,7 @@ struct Settings {
         pageColor = (int)std::min<DWORD>(2, sys::ReadDw(L"PageColor", sys::ReadDw(L"Night", 0) ? 2 : 0));
         mouseMode = (int)std::min<DWORD>(1, sys::ReadDw(L"MouseMode", 0));
         tocAuto = sys::ReadDw(L"TocAuto", 0) != 0;
+        penDraws = sys::ReadDw(L"PenDraws", 0) != 0;
         smooth = sys::ReadDw(L"Smooth", 1) != 0;
         speed = (int)std::min<DWORD>(2, sys::ReadDw(L"Speed", 1));
         invH = sys::ReadDw(L"InvertH", 0) != 0;
@@ -188,6 +201,7 @@ struct Settings {
         sys::WriteDw(L"PageColor", pageColor);
         sys::WriteDw(L"MouseMode", mouseMode);
         sys::WriteDw(L"TocAuto", tocAuto);
+        sys::WriteDw(L"PenDraws", penDraws);
         sys::WriteDw(L"Smooth", smooth);
         sys::WriteDw(L"Speed", speed);
         sys::WriteDw(L"InvertH", invH);
@@ -318,6 +332,8 @@ struct TextPos {
 static bool operator<(const TextPos& a, const TextPos& b) { return a.page < b.page || (a.page == b.page && a.idx < b.idx); }
 static TextPos g_selA, g_selB;
 static bool g_selActive = false, g_selecting = false;
+static TextPos g_penPrevA, g_penPrevB;
+static bool g_penPrevSel = false;
 static float g_selMx = 0, g_selMy = 0;
 
 // Inhaltsverzeichnis (Lesezeichen des PDFs)
@@ -332,6 +348,59 @@ static std::vector<TocItem> g_toc;
 static std::vector<int> g_tocVis;  // sichtbare Einträge (Indizes in g_toc)
 static bool g_tocLoaded = false, g_tocOpen = false;
 static float g_tocScroll = 0;
+
+// Zeichnen (Freihand). Punkte in PDF-Punkten relativ zur Seite (oben links), wie gerendert.
+struct GeoRef {  // gezählte Referenz auf eine Direct2D-Geometrie
+    ID2D1PathGeometry* p = nullptr;
+    GeoRef() {}
+    GeoRef(const GeoRef& o) : p(o.p) { if (p) p->AddRef(); }
+    GeoRef& operator=(const GeoRef& o) {
+        if (o.p) o.p->AddRef();
+        if (p) p->Release();
+        p = o.p;
+        return *this;
+    }
+    ~GeoRef() { if (p) p->Release(); }
+};
+struct Stroke {
+    int page = 0;
+    int tool = 0;  // 0 Stift, 1 Marker
+    UINT32 color = 0;
+    float width = 1.5f;  // in Punkt
+    std::vector<D2D1_POINT_2F> pts;
+    GeoRef geo;
+};
+struct InkUndo {
+    int kind;  // 0 = Strich hinzugefügt, 1 = Strich gelöscht
+    Stroke s;
+    size_t index;
+};
+static std::vector<Stroke> g_strokes;   // noch nicht gespeicherte Striche
+static std::vector<InkUndo> g_undo;
+static bool g_inkMode = false, g_drawing = false, g_erasing = false, g_pdfDirty = false, g_penStroke = false;
+static int g_inkTool = 0;
+static int g_inkColor[2] = {0, 0}, g_inkWidth[2] = {1, 1};
+static Stroke g_cur;
+static ID2D1StrokeStyle* g_round = nullptr;
+static float g_mouseX = -100, g_mouseY = -100;
+static std::wstring g_docPassword;       // für das Neuladen nach dem Speichern
+static const UINT32 kPenColors[5] = {0x1B1B1B, 0xE81123, 0x0063B1, 0x107C10, 0xFF8C00};
+static const UINT32 kMarkColors[5] = {0xFFE600, 0x7CF07C, 0xFF7AD9, 0x63D3FF, 0xFFB45C};
+static const float kPenWidths[3] = {0.8f, 1.6f, 3.2f};
+static const float kMarkWidths[3] = {7.0f, 12.0f, 20.0f};
+
+// Präsentationsmodus
+static bool g_present = false, g_presWasFs = false, g_laser = false, g_cursorHidden = false;
+static int g_presPage = 0, g_presBlank = 0;  // g_presBlank: 0 = Seite, 1 = schwarz, 2 = weiß
+static double g_presSx = 0;
+// Eingabestift (WM_POINTER): Radiererende/-taste radiert, Seitentaste wählt Text aus
+static bool g_penMsg = false, g_penDown = false, g_penErase = false, g_penBarrel = false, g_penSelectTap = false;
+static UINT32 g_penId = 0;
+static DWORD g_penLastUp = 0;
+static float g_penLastX = -100, g_penLastY = -100;
+static BOOL(WINAPI* pGetPointerType)(UINT32, POINTER_INPUT_TYPE*) = nullptr;
+static BOOL(WINAPI* pGetPointerPenInfo)(UINT32, POINTER_PEN_INFO*) = nullptr;
+static BOOL(WINAPI* pGetPointerPenInfoHistory)(UINT32, UINT32*, POINTER_PEN_INFO*) = nullptr;
 
 template <class T> static void SafeRelease(T*& p) {
     if (p) { p->Release(); p = nullptr; }
@@ -520,7 +589,9 @@ class Worker {
             std::lock_guard<std::mutex> lk(mx);
             jobs.clear();
             for (auto& j : v) {
-                if (j.page == inflight.page && j.gen == inflight.gen && j.scale == inflight.scale && j.color == inflight.color) continue;
+                if (j.page == inflight.page && j.gen == inflight.gen && j.scale == inflight.scale && j.color == inflight.color &&
+                    j.ver == inflight.ver)
+                    continue;
                 jobs.push_back(j);
             }
         }
@@ -600,7 +671,7 @@ class Worker {
     }
 
     void Render(const Job& job) {
-        RenderResult* res = new RenderResult{job.gen, job.page, job.scale, job.w, job.h, {}, false, {}, job.color};
+        RenderResult* res = new RenderResult{job.gen, job.page, job.scale, job.w, job.h, {}, false, {}, job.color, job.ver};
         try {
             res->px.resize((size_t)job.w * job.h * 4);
         } catch (...) {
@@ -698,6 +769,16 @@ static D2D1_RECT_F PageRect(int i) {
 
 static bool In(const D2D1_RECT_F& r, float x, float y) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }
 
+// Präsentationsmodus: eine Seite bildschirmfüllend
+static double PresentK(int i) { return std::min(g_cw / g_pages[i].w, g_ch / g_pages[i].h); }  // DIP pro Punkt
+static D2D1_RECT_F PresentRect(int i) {
+    double k = PresentK(i), w = g_pages[i].w * k, h = g_pages[i].h * k;
+    float x = Snap((g_cw - w) / 2), y = Snap((g_ch - h) / 2);
+    return D2D1::RectF(x, y, x + (float)w, y + (float)h);
+}
+static D2D1_RECT_F AnyPageRect(int i) { return g_present ? PresentRect(i) : PageRect(i); }
+static double AnyK(int i) { return g_present ? PresentK(i) : K(); }
+
 static int PageAtDocY(double y) {
     int lo = 0, hi = N() - 1, ans = 0;
     while (lo <= hi) {
@@ -762,6 +843,36 @@ static float CapScale(int i, double s) {
 
 static void UpdateJobs() {
     if (!g_hasDoc) return;
+    if (g_present) {  // aktuelle Seite zuerst, dann die nächste vorausrendern
+        int c = std::clamp(g_presPage, 0, N() - 1);
+        std::vector<int> order{c};
+        if (c + 1 < N()) order.push_back(c + 1);
+        if (c - 1 >= 0) order.push_back(c - 1);
+        if (c + 2 < N()) order.push_back(c + 2);
+        std::vector<Job> jobs;
+        for (int i : order) {
+            PageInfo& p = g_pages[i];
+            float sc = CapScale(i, PresentK(i) * g_dpi / 96.0);
+            if (p.bmp && std::fabs(p.bmpScale - sc) <= 1e-4f) continue;
+            Job j;
+            j.gen = g_docGen;
+            j.page = i;
+            j.scale = sc;
+            j.w = std::max(1, (int)std::lround(p.w * sc));
+            j.h = std::max(1, (int)std::lround(p.h * sc));
+            j.links = !p.linksLoaded;
+            j.color = S.pageColor;
+            j.ver = p.ver;
+            jobs.push_back(j);
+        }
+        g_worker.SetJobs(jobs);
+        for (int i = 0; i < N(); i++)
+            if ((i < c - 3 || i > c + 3) && g_pages[i].bmp) {
+                SafeRelease(g_pages[i].bmp);
+                g_pages[i].bmpScale = 0;
+            }
+        return;
+    }
     int a, b;
     VisibleRange(a, b);
     double s = K() * g_dpi / 96.0;
@@ -791,6 +902,7 @@ static void UpdateJobs() {
         j.h = std::max(1, (int)std::lround(p.h * sc));
         j.links = !p.linksLoaded;
         j.color = S.pageColor;
+        j.ver = p.ver;
         jobs.push_back(j);
     }
     g_worker.SetJobs(jobs);
@@ -945,6 +1057,13 @@ static bool LoadPosition(const std::wstring& path, SavedPos& v) {
            sz == sizeof v;
 }
 
+static bool InkDirty() { return !g_strokes.empty() || g_pdfDirty; }
+
+static void UpdateTitle() {
+    std::wstring t = g_hasDoc ? sys::FileOf(g_path) + (InkDirty() ? L" •" : L"") + L" – FlinkPDF" : L"FlinkPDF";
+    SetWindowTextW(g_hwnd, t.c_str());
+}
+
 static void CloseDocument() {
     SavePosition();
     g_worker.SetJobs({});
@@ -970,6 +1089,12 @@ static void CloseDocument() {
     g_tocVis.clear();
     g_tocLoaded = false;
     g_tocScroll = 0;
+    g_strokes.clear();
+    g_undo.clear();
+    g_cur = Stroke();
+    g_drawing = g_erasing = g_pdfDirty = false;
+    g_inkMode = false;
+    g_present = false;
     SetWindowTextW(g_hwnd, L"FlinkPDF");
 }
 
@@ -995,7 +1120,11 @@ static std::string ToUtf8(const std::wstring& w) {
 
 static void LoadToc();
 
+static bool ConfirmDiscard();
+static bool g_reloading = false;  // Neuladen nach dem Speichern: keine Rückfrage
+
 static bool OpenDocument(const std::wstring& pathIn, const std::wstring* password = nullptr) {
+    if (!g_reloading && !ConfirmDiscard()) return false;
     std::wstring path = pathIn;
     {
         DWORD n = GetFullPathNameW(pathIn.c_str(), 0, nullptr, nullptr);
@@ -1093,8 +1222,8 @@ static bool OpenDocument(const std::wstring& pathIn, const std::wstring* passwor
         g_sy = g_ty = PageTop(pos.page) + std::clamp(pos.frac, -0.2f, 1.0f) * g_pages[pos.page].h * K();
         ClampScroll();
     }
-    std::wstring title = sys::FileOf(path) + L" – FlinkPDF";
-    SetWindowTextW(g_hwnd, title.c_str());
+    g_docPassword = password ? *password : std::wstring();
+    UpdateTitle();
     AddRecent(path);
     if (g_searchOpen && !g_searchText.empty()) SetTimer(g_hwnd, TIMER_SEARCH, 10, nullptr);
     UpdateJobs();
@@ -1420,6 +1549,418 @@ static void SetTocOpen(bool open) {
 }
 
 // ============================================================================
+//  Zeichnen
+// ============================================================================
+static int AnyPageAt(float x, float y) {
+    if (g_present) return In(PresentRect(g_presPage), x, y) ? g_presPage : -1;
+    return PageAtPoint(x, y);
+}
+
+static D2D1_POINT_2F ToPagePt(int i, float x, float y) {
+    D2D1_RECT_F r = AnyPageRect(i);
+    double k = AnyK(i);
+    return D2D1::Point2F((float)std::clamp((x - r.left) / k, 0.0, (double)g_pages[i].w),
+                         (float)std::clamp((y - r.top) / k, 0.0, (double)g_pages[i].h));
+}
+
+static GeoRef BuildGeo(const std::vector<D2D1_POINT_2F>& pts) {
+    GeoRef g;
+    if (pts.empty() || FAILED(g_fac->CreatePathGeometry(&g.p))) return g;
+    ID2D1GeometrySink* sk = nullptr;
+    g.p->Open(&sk);
+    sk->BeginFigure(pts[0], D2D1_FIGURE_BEGIN_HOLLOW);
+    if (pts.size() == 1) sk->AddLine(D2D1::Point2F(pts[0].x + 0.01f, pts[0].y));  // Punkt
+    for (size_t i = 1; i < pts.size(); i++) sk->AddLine(pts[i]);
+    sk->EndFigure(D2D1_FIGURE_END_OPEN);
+    sk->Close();
+    sk->Release();
+    return g;
+}
+
+static void SetInkMode(bool on) {
+    if (!g_hasDoc) on = false;
+    if (on == g_inkMode) return;
+    g_inkMode = on;
+    if (on) {
+        if (g_inkTool == 2) g_inkTool = 0;  // Zeichnen beginnt mit dem Stift
+        g_selActive = false;
+        if (!g_present) Toast(L"Zeichnen: Strg+S speichert die Zeichnung in die PDF", 2600);
+    }
+    Invalidate();
+}
+
+static void InkBegin(int page, float x, float y) {
+    g_cur = Stroke();
+    g_cur.page = page;
+    int t = (g_inkMode && g_inkTool == 1) ? 1 : 0;
+    g_cur.tool = t;
+    g_cur.color = t ? kMarkColors[g_inkColor[1]] : kPenColors[g_inkColor[0]];
+    g_cur.width = t ? kMarkWidths[g_inkWidth[1]] : kPenWidths[g_inkWidth[0]];
+    g_cur.pts.push_back(ToPagePt(page, x, y));
+    g_drawing = true;
+    StopAnim();
+    SetCapture(g_hwnd);
+    Invalidate();
+}
+
+static void InkMove(float x, float y) {
+    D2D1_POINT_2F p = ToPagePt(g_cur.page, x, y), b = g_cur.pts.back();
+    if (std::hypot(p.x - b.x, p.y - b.y) * AnyK(g_cur.page) < 0.75) return;  // < ¾ Pixel: ignorieren
+    g_cur.pts.push_back(p);
+    Invalidate();
+}
+
+static void InkEnd() {
+    if (!g_drawing) return;
+    g_drawing = false;
+    g_penStroke = false;
+    if (!g_cur.pts.empty()) {
+        g_cur.geo = BuildGeo(g_cur.pts);
+        g_strokes.push_back(g_cur);
+        g_undo.push_back({0, Stroke(), g_strokes.size() - 1});
+    }
+    g_cur = Stroke();
+    UpdateTitle();
+    Invalidate();
+}
+
+static void InkUndoLast() {
+    if (g_undo.empty()) return;
+    InkUndo u = g_undo.back();
+    g_undo.pop_back();
+    if (u.kind == 0) {
+        if (!g_strokes.empty()) g_strokes.pop_back();
+    } else {
+        g_strokes.insert(g_strokes.begin() + std::min(u.index, g_strokes.size()), u.s);
+    }
+    UpdateTitle();
+    Invalidate();
+}
+
+static float SegDist(D2D1_POINT_2F p, D2D1_POINT_2F a, D2D1_POINT_2F b) {
+    float dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+    float t = l2 > 0 ? std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / l2, 0.0f, 1.0f) : 0.0f;
+    return std::hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+static bool HitPolyline(const std::vector<D2D1_POINT_2F>& pts, D2D1_POINT_2F p, float tol) {
+    if (pts.size() == 1) return std::hypot(p.x - pts[0].x, p.y - pts[0].y) <= tol;
+    for (size_t j = 0; j + 1 < pts.size(); j++)
+        if (SegDist(p, pts[j], pts[j + 1]) <= tol) return true;
+    return false;
+}
+
+// Gespeicherte Freihand-Annotationen einer Seite einlesen (für den Radierer)
+static void LoadPdfInk(int page) {
+    PageInfo& pi = g_pages[page];
+    pi.pdfInk.clear();
+    pi.inkLoaded = true;
+    std::lock_guard<std::mutex> lk(g_pdfMx);
+    if (!g_doc) return;
+    pdf::PAGE pg = P.LoadPage(g_doc, page);
+    if (!pg) return;
+    const int SX = std::max(1, (int)lround(pi.w * 8)), SY = std::max(1, (int)lround(pi.h * 8));
+    int n = P.PageGetAnnotCount(pg);
+    for (int i = 0; i < n; i++) {
+        pdf::ANNOT a = P.PageGetAnnot(pg, i);
+        if (!a) continue;
+        if (P.AnnotGetSubtype(a) == pdf::ANNOT_INK) {
+            unsigned long paths = P.AnnotGetInkListCount(a);
+            for (unsigned long c = 0; c < paths && c < 1000; c++) {
+                unsigned long len = P.AnnotGetInkListPath(a, c, nullptr, 0);
+                if (!len || len > 100000) continue;
+                std::vector<pdf::POINTF> buf(len);
+                P.AnnotGetInkListPath(a, c, buf.data(), len);
+                std::vector<D2D1_POINT_2F> pts;
+                for (auto& q : buf) {
+                    int dx, dy;
+                    P.PageToDevice(pg, 0, 0, SX, SY, 0, q.x, q.y, &dx, &dy);
+                    pts.push_back(D2D1::Point2F(dx / 8.0f, dy / 8.0f));
+                }
+                pi.pdfInk.push_back({i, std::move(pts)});
+            }
+        }
+        P.PageCloseAnnot(a);
+    }
+    P.ClosePage(pg);
+}
+
+static bool ErasePdfInk(int page, D2D1_POINT_2F p, float tol) {
+    PageInfo& pi = g_pages[page];
+    if (!pi.inkLoaded) LoadPdfInk(page);
+    int hit = -1;
+    for (auto& e : pi.pdfInk)
+        if (HitPolyline(e.second, p, tol + 1.5f)) { hit = e.first; break; }
+    if (hit < 0) return false;
+    {
+        std::lock_guard<std::mutex> lk(g_pdfMx);
+        pdf::PAGE pg = g_doc ? P.LoadPage(g_doc, page) : nullptr;
+        if (!pg) return false;
+        P.PageRemoveAnnot(pg, hit);
+        P.ClosePage(pg);
+    }
+    pi.inkLoaded = false;
+    pi.ver++;            // ältere Renderergebnisse verwerfen
+    pi.bmpScale = -1;    // neu rendern, bis dahin altes Bild zeigen
+    g_pdfDirty = true;
+    UpdateJobs();
+    return true;
+}
+
+static void EraseAt(int page, float x, float y) {
+    D2D1_POINT_2F p = ToPagePt(page, x, y);
+    float tol = (float)(9.0 / AnyK(page));
+    bool any = false;
+    for (size_t i = g_strokes.size(); i-- > 0;) {
+        if (g_strokes[i].page != page || !HitPolyline(g_strokes[i].pts, p, tol + g_strokes[i].width / 2)) continue;
+        g_undo.push_back({1, g_strokes[i], i});
+        g_strokes.erase(g_strokes.begin() + i);
+        any = true;
+    }
+    if (!any) any = ErasePdfInk(page, p, tol);
+    if (any) UpdateTitle();
+    Invalidate();
+}
+
+// --- Speichern: Striche als PDF-Freihand-Annotationen (/Ink) in die Datei schreiben -------------------
+struct FileWriter {
+    pdf::FILEWRITE fw;
+    HANDLE h;
+    bool ok;
+};
+static int WriteBlockCb(pdf::FILEWRITE* self, const void* data, unsigned long size) {
+    FileWriter* w = (FileWriter*)self;
+    DWORD wr = 0;
+    if (!WriteFile(w->h, data, size, &wr, nullptr) || wr != size) w->ok = false;
+    return w->ok ? 1 : 0;
+}
+
+static void CommitStrokesToDoc() {  // Aufrufer hält g_pdfMx
+    for (const Stroke& st : g_strokes) {
+        pdf::PAGE pg = P.LoadPage(g_doc, st.page);
+        if (!pg) continue;
+        const PageInfo& pi = g_pages[st.page];
+        const int SX = std::max(1, (int)lround(pi.w * 8)), SY = std::max(1, (int)lround(pi.h * 8));
+        pdf::ANNOT a = P.PageCreateAnnot(pg, pdf::ANNOT_INK);
+        if (a) {
+            std::vector<pdf::POINTF> pts;
+            float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+            for (auto& q : st.pts) {
+                double px, py;
+                P.DeviceToPage(pg, 0, 0, SX, SY, 0, (int)lround(q.x * 8), (int)lround(q.y * 8), &px, &py);
+                pts.push_back({(float)px, (float)py});
+                x0 = std::min(x0, (float)px); x1 = std::max(x1, (float)px);
+                y0 = std::min(y0, (float)py); y1 = std::max(y1, (float)py);
+            }
+            if (pts.size() == 1) pts.push_back({pts[0].x + 0.05f, pts[0].y});
+            P.AnnotAddInkStroke(a, pts.data(), pts.size());
+            P.AnnotSetColor(a, 0, (st.color >> 16) & 0xFF, (st.color >> 8) & 0xFF, st.color & 0xFF, st.tool == 1 ? 110 : 255);
+            P.AnnotSetBorder(a, 0, 0, st.width);
+            float m = st.width;
+            pdf::RECTF rc{x0 - m, y1 + m, x1 + m, y0 - m};
+            P.AnnotSetRect(a, &rc);
+            P.AnnotSetFlags(a, pdf::ANNOT_FLAG_PRINT);
+            P.PageCloseAnnot(a);
+        }
+        P.ClosePage(pg);
+    }
+    // Einmal kurz rendern: PDFium legt dabei das Erscheinungsbild (/AP) der neuen Annotationen an,
+    // damit andere Programme die Zeichnung exakt so anzeigen.
+    std::vector<int> pages;
+    for (const Stroke& st : g_strokes) pages.push_back(st.page);
+    std::sort(pages.begin(), pages.end());
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+    for (int i : pages) {
+        pdf::PAGE pg = P.LoadPage(g_doc, i);
+        pdf::BMP bm = P.BitmapCreateEx(2, 2, pdf::BITMAP_BGRx, nullptr, 0);
+        if (pg && bm) P.RenderPageBitmap(bm, pg, 0, 0, 2, 2, 0, pdf::F_ANNOT);
+        if (bm) P.BitmapDestroy(bm);
+        if (pg) P.ClosePage(pg);
+    }
+}
+
+static bool SaveDocument(const std::wstring& targetIn) {
+    if (!g_hasDoc) return false;
+    const std::wstring target = targetIn;  // Kopie: targetIn kann g_path sein, das CloseDocument leert
+    InkEnd();
+    // Ansicht merken, um sie nach dem Neuladen wiederherzustellen
+    int vPage = PageAtDocY(g_sy);
+    double vFrac = (g_sy - PageTop(vPage)) / std::max(1.0, g_pages[vPage].h * K());
+    double vZoom = g_zoom, vSx = g_sx;
+    int vMode = g_zoomMode;
+    bool vInk = g_inkMode, vPresent = g_present;
+    int vPresPage = g_presPage;
+
+    std::wstring tmp = target + L".flinkpdf-tmp";
+    HANDLE f = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        Toast(L"Speichern nicht möglich – ist der Ordner schreibgeschützt?", 4000);
+        return false;
+    }
+    bool ok;
+    {
+        std::lock_guard<std::mutex> lk(g_pdfMx);
+        CommitStrokesToDoc();
+        FileWriter w{{1, WriteBlockCb}, f, true};
+        ok = P.SaveAsCopy(g_doc, &w.fw, pdf::SAVE_INCREMENTAL) && w.ok;
+        if (!ok) {  // Fallback: komplett neu schreiben
+            SetFilePointer(f, 0, nullptr, FILE_BEGIN);
+            SetEndOfFile(f);
+            w.ok = true;
+            ok = P.SaveAsCopy(g_doc, &w.fw, pdf::SAVE_NO_INCREMENTAL) && w.ok;
+        }
+    }
+    CloseHandle(f);
+    g_strokes.clear();  // liegen jetzt als Annotationen im Dokument
+    g_undo.clear();
+    if (!ok) {
+        DeleteFileW(tmp.c_str());
+        g_pdfDirty = true;
+        for (auto& p : g_pages) { p.ver++; p.bmpScale = -1; }
+        UpdateJobs();
+        UpdateTitle();
+        Toast(L"Speichern fehlgeschlagen.", 4000);
+        return false;
+    }
+    std::wstring pw = g_docPassword, reopen = target;
+    g_pdfDirty = false;
+    CloseDocument();
+    if (!MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        // Zieldatei gesperrt (z. B. in einem anderen Programm geöffnet): als Kopie daneben ablegen
+        std::wstring base = target.size() > 4 ? target.substr(0, target.size() - 4) : target;
+        reopen = base + L" (bearbeitet).pdf";
+        for (int i = 2; GetFileAttributesW(reopen.c_str()) != INVALID_FILE_ATTRIBUTES && i < 100; i++)
+            reopen = base + Fmt(L" (bearbeitet %d).pdf", i);
+        if (!MoveFileExW(tmp.c_str(), reopen.c_str(), MOVEFILE_WRITE_THROUGH)) reopen = tmp;
+        Toast(L"Original ist gesperrt – gespeichert als „" + sys::FileOf(reopen) + L"“", 5000);
+    } else {
+        Toast(L"Gespeichert", 1600);
+    }
+    g_reloading = true;
+    OpenDocument(reopen, pw.empty() ? nullptr : &pw);
+    g_reloading = false;
+    if (g_hasDoc) {
+        g_zoomMode = vMode;
+        g_zoom = vZoom;
+        vPage = std::clamp(vPage, 0, N() - 1);
+        g_sy = g_ty = PageTop(vPage) + vFrac * g_pages[vPage].h * K();
+        g_sx = g_tx = vSx;
+        ClampScroll();
+        g_inkMode = vInk;
+        if (vPresent) {
+            g_present = true;
+            g_presPage = std::clamp(vPresPage, 0, N() - 1);
+        }
+        UpdateJobs();
+        Invalidate();
+    }
+    return true;
+}
+
+static void SaveDocumentAs() {
+    if (!g_hasDoc) return;
+    IFileSaveDialog* dlg = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_IFileSaveDialog, (void**)&dlg))) return;
+    COMDLG_FILTERSPEC spec[] = {{L"PDF-Dokument", L"*.pdf"}};
+    dlg->SetFileTypes(1, spec);
+    dlg->SetDefaultExtension(L"pdf");
+    dlg->SetFileName(sys::FileOf(g_path).c_str());
+    IShellItem* folder = nullptr;
+    if (SUCCEEDED(SHCreateItemFromParsingName(sys::DirOf(g_path).c_str(), nullptr, IID_IShellItem, (void**)&folder))) {
+        dlg->SetFolder(folder);
+        folder->Release();
+    }
+    std::wstring target;
+    if (dlg->Show(g_hwnd) == S_OK) {
+        IShellItem* it = nullptr;
+        if (SUCCEEDED(dlg->GetResult(&it))) {
+            PWSTR p = nullptr;
+            if (SUCCEEDED(it->GetDisplayName(SIGDN_FILESYSPATH, &p))) {
+                target = p;
+                CoTaskMemFree(p);
+            }
+            it->Release();
+        }
+    }
+    dlg->Release();
+    if (target.empty()) return;
+    if (_wcsicmp(target.c_str(), g_path.c_str()) == 0) {
+        SaveDocument(g_path);
+        return;
+    }
+    // In eine neue Datei: Dokument mit Zeichnung dorthin schreiben, Original unverändert lassen
+    SaveDocument(target);
+}
+
+static bool ConfirmDiscard() {  // true = fortfahren
+    if (!g_hasDoc || !InkDirty()) return true;
+    InkEnd();
+    std::wstring msg = L"Deine Zeichnungen in „" + sys::FileOf(g_path) + L"“ sind noch nicht gespeichert.\n\nJetzt in die PDF speichern?";
+    int r = MessageBoxW(g_hwnd, msg.c_str(), L"FlinkPDF", MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (r == IDCANCEL) return false;
+    if (r == IDYES) return SaveDocument(g_path);
+    g_strokes.clear();
+    g_undo.clear();
+    g_pdfDirty = false;
+    return true;
+}
+
+// ============================================================================
+//  Präsentation
+// ============================================================================
+static void ToggleFullscreen();
+
+static void SetPresentation(bool on) {
+    if (!g_hasDoc) on = false;
+    if (on == g_present) return;
+    if (on) {
+        g_presPage = CurrentPage();
+        g_presBlank = 0;
+        g_laser = false;
+        g_selActive = false;
+        g_panelOpen = false;
+        KillTimer(g_hwnd, TIMER_PANEL);
+        g_presWasFs = g_fullscreen;
+        g_presSx = g_sx;
+        g_present = true;
+        if (!g_fullscreen) ToggleFullscreen();
+        Toast(L"Präsentation · Pfeiltasten/Klick blättern · D zeichnen · L Laserpointer · Esc beendet", 3200);
+        SetTimer(g_hwnd, TIMER_CURSOR, 2500, nullptr);
+    } else {
+        InkEnd();
+        g_present = false;
+        g_laser = false;
+        g_presBlank = 0;
+        g_cursorHidden = false;
+        KillTimer(g_hwnd, TIMER_CURSOR);
+        if (!g_presWasFs && g_fullscreen) ToggleFullscreen();
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        ScrollTo(g_presSx, PageTop(g_presPage) - GAP, false);
+    }
+    UpdateJobs();
+    Invalidate();
+}
+
+static void PresentGo(int i) {
+    i = std::clamp(i, 0, N() - 1);
+    g_presBlank = 0;
+    if (i == g_presPage) return;
+    InkEnd();
+    g_presPage = i;
+    UpdateJobs();
+    Invalidate();
+}
+
+static void PresentPointerActivity() {  // Mauszeiger einblenden, nach 2,5 s wieder ausblenden
+    if (!g_present) return;
+    if (g_cursorHidden) {
+        g_cursorHidden = false;
+        Invalidate();
+    }
+    SetTimer(g_hwnd, TIMER_CURSOR, 2500, nullptr);
+}
+
+// ============================================================================
 //  Drucken
 // ============================================================================
 static void PrintDocument() {
@@ -1555,6 +2096,8 @@ static void CreateDeviceIndependent() {
     fSeg = MkFmt(ui, 12.5f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
     fItem = MkFmt(ui, 13.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, true);
     fIconSm = MkFmt(icon, 10.0f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
+    g_fac->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                         D2D1_LINE_JOIN_ROUND), nullptr, 0, &g_round);
     // Logo (100×100-Box)
     g_logoPage = Poly({{29, 17}, {59, 17}, {74, 32}, {74, 83}, {29, 83}});
     g_logoFold = Poly({{59, 17}, {74, 32}, {59, 32}});
@@ -1718,6 +2261,8 @@ static void DrawToolbar() {
     Fill(D2D1::RectF(x + 2, 14, x + 3, 34), T.text, 0.12f);
     x -= 6;
     IconBtn(place(bw), CMD_SEARCH, 0xE721, L"Suchen (Strg+F)", true, g_searchOpen);
+    IconBtn(place(bw), CMD_INK, 0xE70F, L"Zeichnen (D)", true, g_inkMode);
+    IconBtn(place(bw), CMD_PRESENT, 0xE768, L"Präsentieren (F5)");
     float rightStart = x - 8;
 
     // Mittlere Gruppe: Seite x / n
@@ -1868,6 +2413,110 @@ static void DrawToc() {
     g_rt->PopAxisAlignedClip();
 }
 
+// ---------------------------------------------------------------------------
+//  Zeichnungen
+// ---------------------------------------------------------------------------
+static void DrawStroke(const Stroke& st, ID2D1PathGeometry* geo) {
+    if (!geo) return;
+    SetC(st.color, st.tool == 1 ? 0.42f : 1.0f);
+    g_rt->DrawGeometry(geo, g_br, st.width, g_round);
+}
+
+static void DrawInkForPage(int i, const D2D1_RECT_F& r, double k) {
+    bool any = g_drawing && g_cur.page == i;
+    for (const Stroke& st : g_strokes) any |= st.page == i;
+    if (!any) return;
+    g_rt->SetTransform(D2D1::Matrix3x2F((float)k, 0, 0, (float)k, r.left, r.top));
+    for (const Stroke& st : g_strokes)
+        if (st.page == i) DrawStroke(st, st.geo.p);
+    if (g_drawing && g_cur.page == i) {
+        GeoRef g = BuildGeo(g_cur.pts);
+        DrawStroke(g_cur, g.p);
+    }
+    g_rt->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
+static void DrawEraserCursor() {
+    if (!((g_inkMode && g_inkTool == 2) || g_penErase) || g_mouseX < 0) return;
+    D2D1_ELLIPSE e = D2D1::Ellipse(D2D1::Point2F(g_mouseX, g_mouseY), 9, 9);
+    SetC(0xFFFFFF, 0.55f);
+    g_rt->FillEllipse(e, g_br);
+    SetC(0x000000, 0.7f);
+    g_rt->DrawEllipse(e, g_br, 1.2f);
+}
+
+// Schwebende Zeichen-Werkzeugleiste
+static void DrawInkBar() {
+    const float bw = 36, sw = 28, sep = 13;
+    const float W = 3 * bw + sep + 5 * sw + sep + 3 * sw + sep + 3 * bw + 16;
+    float x0 = ContentX0(), cx = g_present ? g_cw / 2 : (x0 + g_cw - SB_W) / 2;
+    float top = g_present || g_fullscreen ? 14.0f : TB() + 10;
+    D2D1_RECT_F bar = D2D1::RectF(std::max(x0 + 8, cx - W / 2), top, 0, top + 44);
+    bar.right = bar.left + W;
+    DrawShadow(bar, 22, 0.9f);
+    FillR(bar, 22, T.card);
+    StrokeR(bar, 22, T.cardLine);
+    AddZone(bar, CMD_INK_BAR, nullptr);
+    float x = bar.left + 8, bt = top + 4, bb = top + 40, my = top + 22;
+    static const wchar_t kTool[3] = {0xE76D, 0xE7E6, 0xE75C};
+    static const wchar_t* kTip[3] = {L"Stift (P)", L"Textmarker (H)", L"Radierer (E)"};
+    for (int i = 0; i < 3; i++) {
+        D2D1_RECT_F r = D2D1::RectF(x, bt, x + bw, bb);
+        bool act = g_inkTool == i;
+        AddZone(r, CMD_INK_TOOL + i, kTip[i]);
+        if (act) FillR(r, 8, T.accent, 0.22f);
+        else if (g_hot == CMD_INK_TOOL + i) FillR(r, 8, T.text, g_pressed == CMD_INK_TOOL + i ? T.press : T.hover);
+        wchar_t g[2] = {kTool[i], 0};
+        Text(g, fIcon, r, act ? T.accent : T.text);
+        if (i < 2) {  // aktuelle Farbe als Strich unter dem Symbol
+            UINT32 c = i ? kMarkColors[g_inkColor[1]] : kPenColors[g_inkColor[0]];
+            FillR(D2D1::RectF(r.left + 11, bb - 6, r.right - 11, bb - 3), 1.5f, c);
+        }
+        x += bw;
+    }
+    auto separator = [&]() {
+        Fill(D2D1::RectF(x + 6, top + 12, x + 7, top + 32), T.text, 0.14f);
+        x += sep;
+    };
+    separator();
+    int t = g_inkTool == 1 ? 1 : 0;
+    bool erase = g_inkTool == 2;
+    const UINT32* cols = t ? kMarkColors : kPenColors;
+    for (int i = 0; i < 5; i++) {
+        D2D1_RECT_F r = D2D1::RectF(x, bt, x + sw, bb);
+        if (!erase) AddZone(r, CMD_INK_COLOR + i, nullptr);
+        float rad = (!erase && g_hot == CMD_INK_COLOR + i) ? 9.5f : 8.5f;
+        D2D1_ELLIPSE e = D2D1::Ellipse(D2D1::Point2F(x + sw / 2, my), rad, rad);
+        SetC(cols[i], erase ? 0.35f : 1.0f);
+        g_rt->FillEllipse(e, g_br);
+        SetC(T.text, 0.25f);
+        g_rt->DrawEllipse(e, g_br, 1);
+        if (!erase && g_inkColor[t] == i) {
+            SetC(T.accent);
+            g_rt->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(x + sw / 2, my), 12, 12), g_br, 2);
+        }
+        x += sw;
+    }
+    separator();
+    for (int i = 0; i < 3; i++) {
+        D2D1_RECT_F r = D2D1::RectF(x, bt, x + sw, bb);
+        bool act = !erase && g_inkWidth[t] == i;
+        if (!erase) AddZone(r, CMD_INK_WIDTH + i, i == 0 ? L"Dünn" : i == 1 ? L"Mittel" : L"Dick");
+        if (act) FillR(D2D1::RectF(r.left + 1, r.top + 3, r.right - 1, r.bottom - 3), 7, T.accent, 0.22f);
+        else if (!erase && g_hot == CMD_INK_WIDTH + i) FillR(D2D1::RectF(r.left + 1, r.top + 3, r.right - 1, r.bottom - 3), 7, T.text, T.hover);
+        float rad = 2.0f + i * 2.2f;
+        SetC(act ? T.accent : T.text, erase ? 0.3f : 0.9f);
+        g_rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x + sw / 2, my), rad, rad), g_br);
+        x += sw;
+    }
+    separator();
+    IconBtn(D2D1::RectF(x, bt, x + bw, bb), CMD_INK_UNDO, 0xE7A7, L"Rückgängig (Strg+Z)", !g_undo.empty());
+    x += bw;
+    IconBtn(D2D1::RectF(x, bt, x + bw, bb), CMD_INK_SAVE, 0xE74E, L"In die PDF speichern (Strg+S)", InkDirty());
+    x += bw;
+    IconBtn(D2D1::RectF(x, bt, x + bw, bb), CMD_INK_CLOSE, 0xE711, L"Zeichnen beenden (Esc)");
+}
+
 static void DrawPages() {
     int a, b;
     VisibleRange(a, b);
@@ -1895,6 +2544,7 @@ static void DrawPages() {
             Fill(r, S.pageColor == 2 ? 0x1E1E1E : S.pageColor == 1 ? 0xF4ECD8 : 0xFFFFFF);
         }
         if (g_selActive) DrawSelection(i, r);
+        DrawInkForPage(i, r, K());
         // Suchtreffer
         if (!g_hits.empty()) {
             auto it = std::lower_bound(g_hits.begin(), g_hits.end(), i, [](const SearchHit& h, int pg) { return h.page < pg; });
@@ -2156,6 +2806,7 @@ static void DrawSettings() {
     segRow(L"Scrollgeschwindigkeit", {L"Langsam", L"Normal", L"Schnell"}, S.speed, CMD_SET_SPEED);
     toggleRow(L"Horizontal umkehren", L"Richtung links/rechts tauschen", S.invH, CMD_SET_INVH);
     toggleRow(L"Vertikal umkehren", L"Richtung oben/unten tauschen", S.invV, CMD_SET_INVV);
+    toggleRow(L"Mit dem Stift direkt zeichnen", L"Eingabestift malt auch ohne Zeichenmodus", S.penDraws, CMD_SET_PEN);
     divider();
     section(L"DOKUMENTE");
     segRow(L"Zoom beim Öffnen", {L"Zuletzt", L"Seitenbreite", L"Ganze Seite"}, S.openZoom, CMD_SET_OPEN);
@@ -2176,7 +2827,7 @@ static void DrawSettings() {
     }
     buttonRow(L"PDF-Registrierung", L"FlinkPDF aus „Öffnen mit“ entfernen", L"Entfernen", CMD_SET_UNREG, sys::IsRegistered());
     y += 10;
-    Text(L"FlinkPDF 1.2  ·  Rendering: PDFium", fSmall, D2D1::RectF(x0, y, x1, y + 20), T.dim);
+    Text(L"FlinkPDF 1.3  ·  Rendering: PDFium", fSmall, D2D1::RectF(x0, y, x1, y + 20), T.dim);
     y += 32;
     g_panelContentH = y + g_panelScroll - top;
     g_rt->PopAxisAlignedClip();
@@ -2197,6 +2848,71 @@ static void OpenPanel(bool open) {
     Invalidate();
 }
 
+static void DrawPresentation() {
+    g_rt->Clear(D2D1::ColorF(0, 0, 0, 1));
+    if (g_presBlank) {
+        if (g_presBlank == 2) g_rt->Clear(D2D1::ColorF(1, 1, 1, 1));
+    } else {
+        int i = g_presPage;
+        PageInfo& p = g_pages[i];
+        D2D1_RECT_F r = PresentRect(i);
+        if (p.bmp) {
+            D2D1_RECT_F dst = r;
+            double s = PresentK(i) * g_dpi / 96.0;
+            int ew = std::max(1, (int)std::lround(p.w * s)), eh = std::max(1, (int)std::lround(p.h * s));
+            if (p.bmpW == ew && p.bmpH == eh) {
+                dst.right = r.left + p.bmpW * 96.0f / g_dpi;
+                dst.bottom = r.top + p.bmpH * 96.0f / g_dpi;
+            }
+            g_rt->DrawBitmap(p.bmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
+        } else {
+            Fill(r, S.pageColor == 2 ? 0x1E1E1E : S.pageColor == 1 ? 0xF4ECD8 : 0xFFFFFF);
+        }
+        DrawInkForPage(i, r, PresentK(i));
+    }
+    DrawEraserCursor();
+    if (g_laser && !g_inkMode && g_mouseX >= 0) {
+        D2D1_POINT_2F c = D2D1::Point2F(g_mouseX, g_mouseY);
+        SetC(0xFF2020, 0.18f);
+        g_rt->FillEllipse(D2D1::Ellipse(c, 15, 15), g_br);
+        SetC(0xFF2020, 0.35f);
+        g_rt->FillEllipse(D2D1::Ellipse(c, 9, 9), g_br);
+        SetC(0xFF4040);
+        g_rt->FillEllipse(D2D1::Ellipse(c, 5, 5), g_br);
+        SetC(0xFFFFFF, 0.8f);
+        g_rt->FillEllipse(D2D1::Ellipse(c, 1.8f, 1.8f), g_br);
+    }
+    if (g_inkMode) DrawInkBar();
+    if (!g_cursorHidden || g_inkMode) {  // Steuerleiste unten links
+        const float bw = 36;
+        std::wstring pg = Fmt(L"%d / %d", g_presPage + 1, N());
+        float tw = Measure(pg, fUi) + 16;
+        D2D1_RECT_F bar = D2D1::RectF(16, g_ch - 60, 16 + 8 + bw * 2 + tw + 13 + bw * 3 + 8, g_ch - 16);
+        FillR(bar, 22, 0x202020, 0.88f);
+        AddZone(bar, CMD_PRES_BAR, nullptr);
+        Theme saved = T;  // helle Symbole auf dunklem Grund, unabhängig vom Farbschema
+        T.text = 0xFFFFFF;
+        T.hover = 0.14f;
+        T.press = 0.22f;
+        float x = bar.left + 8, bt = bar.top + 4, bb = bar.bottom - 4;
+        IconBtn(D2D1::RectF(x, bt, x + bw, bb), CMD_PRES_PREV, 0xE76B, L"Vorherige Folie", g_presPage > 0);
+        x += bw;
+        Text(pg, fUiC, D2D1::RectF(x, bar.top, x + tw, bar.bottom), 0xFFFFFF, 0.9f);
+        x += tw;
+        IconBtn(D2D1::RectF(x, bt, x + bw, bb), CMD_PRES_NEXT, 0xE76C, L"Nächste Folie", g_presPage < N() - 1);
+        x += bw;
+        Fill(D2D1::RectF(x + 6, bar.top + 12, x + 7, bar.bottom - 12), 0xFFFFFF, 0.2f);
+        x += 13;
+        IconBtn(D2D1::RectF(x, bt, x + bw, bb), CMD_INK, 0xE70F, L"Zeichnen (D)", true, g_inkMode);
+        x += bw;
+        IconBtn(D2D1::RectF(x, bt, x + bw, bb), CMD_PRES_LASER, 0xE7C8, L"Laserpointer (L)", true, g_laser);
+        x += bw;
+        IconBtn(D2D1::RectF(x, bt, x + bw, bb), CMD_PRES_EXIT, 0xE73F, L"Präsentation beenden (Esc)");
+        T = saved;
+    }
+    if (!g_toast.empty()) DrawToast();
+}
+
 static void Paint() {
     if (!EnsureRT()) return;
     g_zones.clear();
@@ -2209,12 +2925,23 @@ static void Paint() {
     } else {
         g_rt->Clear(Col(T.bg));
     }
+    if (g_present && g_hasDoc) {
+        DrawPresentation();
+        HRESULT hr = g_rt->EndDraw();
+        if (hr == (HRESULT)D2DERR_RECREATE_TARGET) {
+            DiscardDevice();
+            Invalidate();
+        }
+        return;
+    }
     if (g_hasDoc) DrawPages();
     else if (!g_pwPath.empty()) DrawPassword();
     else DrawEmpty();
     if (g_hasDoc) DrawScrollbars();
     if (g_hasDoc && ContentX0() > 0) DrawToc();
     if (g_hasDoc && g_searchOpen) DrawSearchPanel();
+    if (g_hasDoc) DrawEraserCursor();
+    if (g_inkMode && g_hasDoc) DrawInkBar();
     if (g_panelOpen) DrawSettings();
     if (!g_fullscreen) DrawToolbar();
     if (!g_toast.empty()) DrawToast();
@@ -2411,6 +3138,10 @@ static void SetDefaultApp() {
 static void ShowMenu(const D2D1_RECT_F& anchor) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING, MNU_DEFAULT, g_isDefault ? L"Standard-App-Einstellungen öffnen" : L"Als Standard-App für PDFs festlegen…");
+    AppendMenuW(m, MF_STRING | (g_hasDoc && InkDirty() ? 0 : MF_GRAYED), MNU_SAVE, L"Zeichnung speichern\tStrg+S");
+    AppendMenuW(m, MF_STRING | (g_hasDoc ? 0 : MF_GRAYED), MNU_SAVEAS, L"Speichern unter…\tStrg+Umschalt+S");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (g_hasDoc ? 0 : MF_GRAYED), MNU_PRESENT, L"Präsentieren\tF5");
     AppendMenuW(m, MF_STRING | (g_hasDoc ? 0 : MF_GRAYED), MNU_FULLSCREEN, L"Vollbild\tF11");
     AppendMenuW(m, MF_STRING | (g_hasDoc ? 0 : MF_GRAYED), MNU_LOCATION, L"Im Explorer anzeigen");
     AppendMenuW(m, MF_STRING | (g_hasDoc ? 0 : MF_GRAYED), MNU_OPENWITH, L"Mit anderer App öffnen…");
@@ -2424,6 +3155,9 @@ static void ShowMenu(const D2D1_RECT_F& anchor) {
     DestroyMenu(m);
     switch (c) {
         case MNU_DEFAULT: SetDefaultApp(); break;
+        case MNU_SAVE: SaveDocument(g_path); break;
+        case MNU_SAVEAS: SaveDocumentAs(); break;
+        case MNU_PRESENT: SetPresentation(true); break;
         case MNU_FULLSCREEN: ToggleFullscreen(); break;
         case MNU_SETTINGS: OpenPanel(true); break;
         case MNU_LOCATION: {
@@ -2445,7 +3179,7 @@ static void ShowMenu(const D2D1_RECT_F& anchor) {
             break;
         case MNU_ABOUT:
             MessageBoxW(g_hwnd,
-                        L"FlinkPDF 1.2\nEin schneller, schlanker PDF-Viewer.\n\n"
+                        L"FlinkPDF 1.3\nEin schneller, schlanker PDF-Viewer.\n\n"
                         L"Tastenkürzel:\n"
                         L"Strg+O  Öffnen\t\tStrg+F  Suchen\n"
                         L"Strg+P  Drucken\t\tStrg+G  Gehe zu Seite\n"
@@ -2453,7 +3187,11 @@ static void ShowMenu(const D2D1_RECT_F& anchor) {
                         L"Strg+1  100 %\t\tStrg+2  Ganze Seite\n"
                         L"F11  Vollbild\t\tStrg+W  Schließen\n"
                         L"Strg+,  Einstellungen\t\tStrg+B  Inhaltsverzeichnis\n"
-                        L"Strg+C  Kopieren\t\tStrg+A  Alles auswählen\n\n"
+                        L"Strg+C  Kopieren\t\tStrg+A  Alles auswählen\n"
+                        L"D  Zeichnen\t\tStrg+Z  Rückgängig\n"
+                        L"Strg+S  Zeichnung speichern\tF5  Präsentieren\n\n"
+                        L"Präsentation: Pfeiltasten/Klick blättern, L Laserpointer,\n"
+                        L"B/W schwarzer/weißer Bildschirm, Esc beendet\n\n"
                         L"Rendering: PDFium (BSD-3-Clause / Apache-2.0)",
                         L"Über FlinkPDF", MB_OK | MB_ICONINFORMATION);
             break;
@@ -2488,6 +3226,9 @@ static void ShowContextMenu(float x, float y) {
     AppendMenuW(m, MF_STRING | (g_selActive && sel.size() < 120 ? 0 : MF_GRAYED), MNU_SEARCHSEL, L"Auswahl im Dokument suchen");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (g_tocOpen ? MF_CHECKED : 0), MNU_TOC, L"Inhaltsverzeichnis\tStrg+B");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (g_inkMode ? MF_CHECKED : 0), MNU_SAVE + 50, L"Zeichnen\tD");
+    AppendMenuW(m, MF_STRING, MNU_PRESENT, L"Präsentieren\tF5");
     POINT pt{DipToPx(x), DipToPx(y)};
     ClientToScreen(g_hwnd, &pt);
     int c = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, 0, g_hwnd, nullptr);
@@ -2496,6 +3237,8 @@ static void ShowContextMenu(float x, float y) {
         case MNU_COPY: CopySelection(); break;
         case MNU_SELALL: SelectAll(); break;
         case MNU_TOC: SetTocOpen(!g_tocOpen); break;
+        case MNU_SAVE + 50: SetInkMode(!g_inkMode); break;
+        case MNU_PRESENT: SetPresentation(true); break;
         case MNU_SEARCHSEL: {
             std::wstring q;
             for (wchar_t ch : sel) q.push_back(ch == L'\r' || ch == L'\n' || ch == L'\t' ? L' ' : ch);
@@ -2546,6 +3289,17 @@ static void Execute(int cmd, const D2D1_RECT_F& r) {
         case CMD_TOC_CLOSE: SetTocOpen(false); break;
         case CMD_TOC_PANEL: break;
         case CMD_SET_TOCAUTO: S.tocAuto = !S.tocAuto; S.Save(); break;
+        case CMD_SET_PEN: S.penDraws = !S.penDraws; S.Save(); break;
+        case CMD_INK: SetInkMode(!g_inkMode); break;
+        case CMD_INK_CLOSE: SetInkMode(false); break;
+        case CMD_INK_UNDO: InkUndoLast(); break;
+        case CMD_INK_SAVE: SaveDocument(g_path); break;
+        case CMD_INK_BAR: case CMD_PRES_BAR: break;
+        case CMD_PRESENT: SetPresentation(true); break;
+        case CMD_PRES_EXIT: SetPresentation(false); break;
+        case CMD_PRES_PREV: PresentGo(g_presPage - 1); break;
+        case CMD_PRES_NEXT: PresentGo(g_presPage + 1); break;
+        case CMD_PRES_LASER: g_laser = !g_laser; if (g_laser) SetInkMode(false); break;
         case CMD_SET_SMOOTH: S.smooth = !S.smooth; S.Save(); break;
         case CMD_SET_INVH: S.invH = !S.invH; S.Save(); break;
         case CMD_SET_INVV: S.invV = !S.invV; S.Save(); break;
@@ -2589,6 +3343,12 @@ static void Execute(int cmd, const D2D1_RECT_F& r) {
             } else if (cmd >= CMD_SET_SPEED && cmd <= CMD_SET_SPEED + 2) {
                 S.speed = cmd - CMD_SET_SPEED;
                 S.Save();
+            } else if (cmd >= CMD_INK_TOOL && cmd <= CMD_INK_TOOL + 2) {
+                g_inkTool = cmd - CMD_INK_TOOL;
+            } else if (cmd >= CMD_INK_COLOR && cmd <= CMD_INK_COLOR + 4) {
+                g_inkColor[g_inkTool == 1 ? 1 : 0] = cmd - CMD_INK_COLOR;
+            } else if (cmd >= CMD_INK_WIDTH && cmd <= CMD_INK_WIDTH + 2) {
+                g_inkWidth[g_inkTool == 1 ? 1 : 0] = cmd - CMD_INK_WIDTH;
             } else if (cmd >= CMD_SET_OPEN && cmd <= CMD_SET_OPEN + 2) {
                 S.openZoom = cmd - CMD_SET_OPEN;
                 S.Save();
@@ -2731,8 +3491,61 @@ static bool FieldKey(WPARAM vk) {
     return false;
 }
 
+static bool InkKey(WPARAM vk, bool ctrl, bool shift) {  // Zeichnen: in Ansicht und Präsentation
+    if (!g_hasDoc || (g_focus != FLD_NONE && !ctrl)) return false;  // Tippen im Suchfeld
+    if (ctrl) {
+        switch (vk) {
+            case 'Z': InkUndoLast(); return true;
+            case 'S': if (shift) SaveDocumentAs(); else if (InkDirty()) SaveDocument(g_path); else Toast(L"Keine Änderungen zu speichern."); return true;
+        }
+        return false;
+    }
+    switch (vk) {
+        case 'D': SetInkMode(!g_inkMode); if (g_inkMode) g_laser = false; return true;
+        case 'P': if (!g_inkMode) return false; g_inkTool = 0; Invalidate(); return true;
+        case 'H': if (!g_inkMode) return false; g_inkTool = 1; Invalidate(); return true;
+        case 'E': SetInkMode(true); g_inkTool = 2; g_laser = false; Invalidate(); return true;
+    }
+    return false;
+}
+
+static void OnPresentKey(WPARAM vk, bool ctrl, bool shift) {
+    PresentPointerActivity();
+    if (InkKey(vk, ctrl, shift)) return;
+    switch (vk) {
+        case VK_RIGHT: case VK_DOWN: case VK_NEXT: case VK_RETURN: case 'N':
+            PresentGo(g_presPage + 1);
+            break;
+        case VK_SPACE: PresentGo(g_presPage + (shift ? -1 : 1)); break;
+        case VK_LEFT: case VK_UP: case VK_PRIOR: case VK_BACK:
+            PresentGo(g_presPage - 1);
+            break;
+        case VK_HOME: PresentGo(0); break;
+        case VK_END: PresentGo(N() - 1); break;
+        case VK_ESCAPE:
+            if (g_presBlank) { g_presBlank = 0; Invalidate(); }
+            else if (g_inkMode) SetInkMode(false);
+            else SetPresentation(false);
+            break;
+        case VK_F5: SetPresentation(false); break;
+        case 'B': case VK_OEM_PERIOD: g_presBlank = g_presBlank == 1 ? 0 : 1; Invalidate(); break;
+        case 'W': case VK_OEM_COMMA: g_presBlank = g_presBlank == 2 ? 0 : 2; Invalidate(); break;
+        case 'L': g_laser = !g_laser; if (g_laser) SetInkMode(false); Invalidate(); break;
+    }
+}
+
 static void OnKey(WPARAM vk) {
     bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0;
+    if (g_present) {
+        if (ctrl && vk == 'W') PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+        else OnPresentKey(vk, ctrl, shift);
+        return;
+    }
+    if (InkKey(vk, ctrl, shift)) return;
+    if (vk == VK_F5 && g_hasDoc) {
+        SetPresentation(true);
+        return;
+    }
     if (ctrl) {
         switch (vk) {
             case 'O': ShowOpenDialog(); return;
@@ -2761,6 +3574,7 @@ static void OnKey(WPARAM vk) {
         case VK_F3: NextHit(shift ? -1 : +1); return;
         case VK_ESCAPE:
             if (g_panelOpen) OpenPanel(false);
+            else if (g_inkMode) SetInkMode(false);
             else if (g_selActive) { g_selActive = false; Invalidate(); }
             else if (g_fullscreen) ToggleFullscreen();
             else if (g_searchOpen) CloseSearch();
@@ -2785,12 +3599,34 @@ static void OnKey(WPARAM vk) {
     }
 }
 
+// Maus-Nachricht stammt von einem Eingabestift (nicht Touch)?
+static bool IsPenInput() {
+    if (g_penMsg) return true;
+    LPARAM extra = GetMessageExtraInfo();
+    return (extra & 0xFFFFFF00) == 0xFF515700 && !(extra & 0x80);
+}
+
 static void OnMouseMove(float x, float y) {
     if (!g_tracking) {
         TRACKMOUSEEVENT tme{sizeof tme, TME_LEAVE, g_hwnd, 0};
         TrackMouseEvent(&tme);
         g_tracking = true;
     }
+    bool moved = std::fabs(x - g_mouseX) + std::fabs(y - g_mouseY) > 0.5f;
+    g_mouseX = x;
+    g_mouseY = y;
+    if (g_drawing) {
+        InkMove(x, y);
+        return;
+    }
+    if (g_erasing) {
+        int pg = AnyPageAt(x, y);
+        if (pg >= 0) EraseAt(pg, x, y);
+        else Invalidate();
+        return;
+    }
+    if (g_present && moved) PresentPointerActivity();
+    if ((g_inkMode && g_inkTool == 2) || g_penErase || (g_present && g_laser)) Invalidate();  // Radierer-Kreis / Laserpunkt folgen
     if (g_sbDrag) {
         D2D1_RECT_F t;
         if (ThumbRect(t)) {
@@ -2830,7 +3666,19 @@ static void OnMouseMove(float x, float y) {
         Invalidate();
     }
     UpdateTooltip(z);
+    if (g_present) {
+        if (z) SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        else if ((g_inkMode && g_inkTool == 2) || g_penErase) SetCursor(nullptr);
+        else if (g_inkMode && AnyPageAt(x, y) >= 0) SetCursor(LoadCursor(nullptr, IDC_CROSS));
+        else if (g_laser || g_cursorHidden) SetCursor(nullptr);
+        else SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        return;
+    }
     LPCWSTR cur = IDC_ARROW;
+    if (!z && !sb && (g_inkMode || g_penErase) && !g_penBarrel && y >= TB() && x >= ContentX0() && PageAtPoint(x, y) >= 0) {
+        SetCursor(g_inkTool == 2 || g_penErase ? nullptr : LoadCursor(nullptr, IDC_CROSS));
+        return;
+    }
     if (z && (z->cmd == CMD_SEARCHFIELD || z->cmd == CMD_PWFIELD)) cur = IDC_IBEAM;
     else if (z) cur = IDC_ARROW;
     else if (!sb && LinkAt(x, y)) cur = IDC_HAND;
@@ -2858,6 +3706,42 @@ static void OnLButtonDown(float x, float y) {
         Invalidate();
         return;
     }
+    // Zeichnen: im Zeichenmodus, oder direkt mit dem Eingabestift
+    bool pen = IsPenInput();
+    bool penErase = pen && g_penErase, penSelect = pen && g_penBarrel && !penErase;
+    g_penSelectTap = false;
+    if (g_hasDoc && !penSelect && (g_inkMode || penErase || (pen && S.penDraws)) &&
+        (g_present || (y >= TB() && x >= ContentX0()))) {
+        int pg = AnyPageAt(x, y);
+        if (pg >= 0) {
+            if ((g_inkMode && g_inkTool == 2) || penErase) {
+                g_erasing = true;
+                StopAnim();
+                SetCapture(g_hwnd);
+                EraseAt(pg, x, y);
+            } else {
+                g_penStroke = pen;
+                InkBegin(pg, x, y);
+            }
+            return;
+        }
+        if (g_inkMode || penErase) return;
+    }
+    if (g_present) {  // Klick: Link folgen oder weiterblättern
+        if (penSelect) return;
+        D2D1_RECT_F r = PresentRect(g_presPage);
+        if (In(r, x, y)) {
+            float nx = (x - r.left) / (r.right - r.left), ny = (y - r.top) / (r.bottom - r.top);
+            for (auto& l : g_pages[g_presPage].links)
+                if (In(l.r, nx, ny)) {
+                    if (l.page >= 0) PresentGo(l.page);
+                    else { LinkInfo copy = l; FollowLink(copy); }
+                    return;
+                }
+        }
+        PresentGo(g_presPage + 1);
+        return;
+    }
     D2D1_RECT_F t;
     if (InScrollbar(x, y) && ThumbRect(t)) {
         if (y >= t.top && y < t.bottom) {
@@ -2873,11 +3757,17 @@ static void OnLButtonDown(float x, float y) {
     if (g_hasDoc && y >= TB() && x >= ContentX0()) {
         int pg = PageAtPoint(x, y);
         bool shift = GetKeyState(VK_SHIFT) < 0;
-        if (pg >= 0 && (S.mouseMode == 0 || shift)) {
+        if (pg >= 0 && (S.mouseMode == 0 || shift || penSelect)) {
             EnsureText(pg);
             bool on = false;
             int c = CaretAt(pg, x, y, &on);
-            if ((shift && g_selActive) || on || (shift && S.mouseMode == 1)) {
+            if ((shift && g_selActive) || on || (shift && S.mouseMode == 1) || penSelect) {
+                g_penSelectTap = penSelect;
+                if (penSelect) {  // für Tippen = Kontextmenü: bestehende Markierung merken
+                    g_penPrevA = g_selA;
+                    g_penPrevB = g_selB;
+                    g_penPrevSel = g_selActive;
+                }
                 if (!(shift && g_selActive)) g_selA = {pg, c};
                 g_selB = {pg, c};
                 g_selActive = g_selA.page != g_selB.page || g_selA.idx != g_selB.idx;
@@ -2906,6 +3796,15 @@ static void OnLButtonDown(float x, float y) {
 
 static void OnLButtonUp(float x, float y) {
     // Zustand sichern – ReleaseCapture löst WM_CAPTURECHANGED aus, das ihn zurücksetzt
+    if (g_drawing) {
+        InkMove(x, y);
+        InkEnd();
+    }
+    if (g_erasing) {
+        g_erasing = false;
+        if (GetCapture() == g_hwnd) ReleaseCapture();
+        return;
+    }
     int pressed = g_pressed;
     bool sbDrag = g_sbDrag, panning = g_panning, selecting = g_selecting;
     g_pressed = CMD_NONE;
@@ -2913,8 +3812,18 @@ static void OnLButtonUp(float x, float y) {
     if (GetCapture() == g_hwnd) ReleaseCapture();
     if (selecting) {
         KillTimer(g_hwnd, TIMER_AUTOSCROLL);
-        if (!g_selActive) {  // nur geklickt: ggf. Link öffnen
-            const LinkInfo* l = LinkAt(x, y);
+        bool tap = g_penSelectTap;
+        g_penSelectTap = false;
+        if (!g_selActive) {
+            if (tap) {  // Stift-Seitentaste + Tippen = Rechtsklick
+                g_selA = g_penPrevA;
+                g_selB = g_penPrevB;
+                g_selActive = g_penPrevSel;
+                Invalidate();
+                ShowContextMenu(x, y);
+                return;
+            }
+            const LinkInfo* l = LinkAt(x, y);  // nur geklickt: ggf. Link öffnen
             if (l) { LinkInfo copy = *l; FollowLink(copy); }
         }
         return;
@@ -2953,6 +3862,16 @@ static void OnWheel(int delta, bool horizontal, float x, float y) {
         return;
     }
     if (!g_hasDoc) return;
+    if (g_present) {  // Mausrad blättert Folien
+        static int acc = 0;
+        acc += delta;
+        if (std::abs(acc) >= 120) {
+            int step = (horizontal ? (S.invH ? -acc : acc) : (S.invV ? acc : -acc)) > 0 ? 1 : -1;
+            PresentGo(g_presPage + step);
+            acc = 0;
+        }
+        return;
+    }
     if (x < ContentX0() && y >= TB()) {  // Inhaltsverzeichnis scrollen
         if (!horizontal) {
             g_tocScroll -= delta / 120.0f * 90.0f;
@@ -2983,6 +3902,80 @@ static void OnWheel(int delta, bool horizontal, float x, float y) {
         if (S.invV) dy = -dy;
         ScrollBy(0, dy, smooth);
     }
+}
+
+// ---------------------------------------------------------------------------
+//  Eingabestift direkt über WM_POINTER: liefert Radierer- und Seitentaste sowie alle Zwischenpunkte
+// ---------------------------------------------------------------------------
+static bool OnPenPointer(UINT msg, WPARAM wp) {  // true = verarbeitet (keine Maus-Ersatznachrichten)
+    if (!pGetPointerType || !pGetPointerPenInfo) return false;
+    UINT32 id = GET_POINTERID_WPARAM(wp);
+    POINTER_INPUT_TYPE type = PT_POINTER;
+    if (!pGetPointerType(id, &type) || type != PT_PEN) return false;
+    if (g_penDown && id != g_penId) return true;
+    POINTER_PEN_INFO pi{};
+    if (!pGetPointerPenInfo(id, &pi)) return false;
+    auto pos = [](const POINTER_PEN_INFO& q, float& x, float& y) {
+        POINT p = q.pointerInfo.ptPixelLocation;
+        ScreenToClient(g_hwnd, &p);
+        x = PxToDip(p.x);
+        y = PxToDip(p.y);
+    };
+    float x, y;
+    pos(pi, x, y);
+    bool erase = (pi.penFlags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER)) != 0;
+    bool barrel = (pi.penFlags & PEN_FLAG_BARREL) != 0;
+    g_penMsg = true;
+    if (msg == WM_POINTERDOWN) {
+        g_penId = id;
+        g_penDown = true;
+        g_penErase = erase;
+        g_penBarrel = barrel;
+        // Doppeltippen (ohne Zeichnen) markiert ein Wort – wie Doppelklick
+        bool dbl = !erase && !barrel && !g_inkMode && !S.penDraws && !g_present &&
+                   GetTickCount() - g_penLastUp < GetDoubleClickTime() && std::hypot(x - g_penLastX, y - g_penLastY) < 8;
+        int pg = dbl && g_hasDoc && !ZoneAt(x, y) ? PageAtPoint(x, y) : -1;
+        if (pg >= 0) {
+            SelectWordAt(pg, x, y);
+            g_penLastUp = 0;
+        } else {
+            OnLButtonDown(x, y);
+        }
+    } else if (msg == WM_POINTERUPDATE) {
+        if (!g_penDown) {  // Schweben: Radierer-Kreis anzeigen, sobald das Radiererende zeigt
+            if (erase != g_penErase || barrel != g_penBarrel) {
+                g_penErase = erase;
+                g_penBarrel = barrel;
+                Invalidate();
+            }
+            OnMouseMove(x, y);
+        } else if ((g_drawing || g_erasing) && pGetPointerPenInfoHistory && pi.pointerInfo.historyCount > 1) {
+            // alle zusammengefassten Zwischenpunkte übernehmen -> glatte Striche auch bei schnellen Bewegungen
+            UINT32 n = std::min<UINT32>(pi.pointerInfo.historyCount, 64);
+            POINTER_PEN_INFO hist[64];
+            if (pGetPointerPenInfoHistory(id, &n, hist)) {
+                for (UINT32 i = n; i-- > 0;) {  // [0] ist der neueste Punkt
+                    float hx, hy;
+                    pos(hist[i], hx, hy);
+                    OnMouseMove(hx, hy);
+                }
+            } else {
+                OnMouseMove(x, y);
+            }
+        } else {
+            OnMouseMove(x, y);
+        }
+    } else {  // WM_POINTERUP
+        g_penDown = false;
+        OnLButtonUp(x, y);
+        g_penBarrel = barrel;
+        g_penErase = erase;
+        g_penLastUp = GetTickCount();
+        g_penLastX = x;
+        g_penLastY = y;
+    }
+    g_penMsg = false;
+    return true;
 }
 
 // ============================================================================
@@ -3114,24 +4107,60 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case WM_SETCURSOR:
-            if (LOWORD(lp) == HTCLIENT) return TRUE;  // wird in WM_MOUSEMOVE gesetzt
+            if (LOWORD(lp) == HTCLIENT) {  // wird in WM_MOUSEMOVE gesetzt
+                if (g_present && g_cursorHidden && !g_inkMode) SetCursor(nullptr);
+                return TRUE;
+            }
             break;
-        case WM_MOUSEMOVE: OnMouseMove(PxToDip(GET_X_LPARAM(lp)), PxToDip(GET_Y_LPARAM(lp))); return 0;
+        case WM_POINTERDOWN:
+        case WM_POINTERUPDATE:
+        case WM_POINTERUP:
+            if (OnPenPointer(msg, wp)) return 0;
+            break;
+        case WM_POINTERLEAVE:
+        case WM_POINTERCAPTURECHANGED:
+            if (g_penId == GET_POINTERID_WPARAM(wp)) {
+                if (msg == WM_POINTERCAPTURECHANGED && g_penDown) {
+                    g_penDown = false;
+                    InkEnd();
+                    g_erasing = false;
+                }
+                if (msg == WM_POINTERLEAVE && !g_penDown) {
+                    g_mouseX = g_mouseY = -100;
+                    if (g_penErase || g_penBarrel) {
+                        g_penErase = g_penBarrel = false;
+                        Invalidate();
+                    }
+                }
+            }
+            break;
+        case WM_MOUSEMOVE:
+            if (g_penErase && !IsPenInput()) { g_penErase = g_penBarrel = false; Invalidate(); }  // wieder mit der Maus
+            OnMouseMove(PxToDip(GET_X_LPARAM(lp)), PxToDip(GET_Y_LPARAM(lp)));
+            return 0;
         case WM_MOUSELEAVE:
             g_tracking = false;
+            if (g_mouseX >= 0 && !g_drawing && !g_erasing) {
+                g_mouseX = g_mouseY = -100;
+                if (g_inkMode || g_laser) Invalidate();
+            }
             if (g_hot != CMD_NONE || g_sbHover) { g_hot = CMD_NONE; g_sbHover = false; Invalidate(); }
             UpdateTooltip(nullptr);
             return 0;
         case WM_LBUTTONDOWN: OnLButtonDown(PxToDip(GET_X_LPARAM(lp)), PxToDip(GET_Y_LPARAM(lp))); return 0;
         case WM_LBUTTONDBLCLK: {
             float x = PxToDip(GET_X_LPARAM(lp)), y = PxToDip(GET_Y_LPARAM(lp));
-            int pg = ZoneAt(x, y) ? -1 : PageAtPoint(x, y);
+            int pg = ZoneAt(x, y) || g_present || g_inkMode ? -1 : PageAtPoint(x, y);
             if (pg >= 0) SelectWordAt(pg, x, y);  // Doppelklick markiert ein Wort
             else OnLButtonDown(x, y);
             return 0;
         }
         case WM_RBUTTONUP: {
             float x = PxToDip(GET_X_LPARAM(lp)), y = PxToDip(GET_Y_LPARAM(lp));
+            if (g_present) {
+                if (!ZoneAt(x, y)) PresentGo(g_presPage - 1);
+                return 0;
+            }
             if (g_hasDoc && !ZoneAt(x, y) && PageAtPoint(x, y) >= 0) {
                 ShowContextMenu(x, y);
                 return 0;
@@ -3140,6 +4169,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_LBUTTONUP: OnLButtonUp(PxToDip(GET_X_LPARAM(lp)), PxToDip(GET_Y_LPARAM(lp))); return 0;
         case WM_CAPTURECHANGED:
+            InkEnd();
+            g_erasing = false;
             g_selecting = false;
             KillTimer(h, TIMER_AUTOSCROLL);
             g_panning = false;
@@ -3188,7 +4219,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CHAR:
             if (wp < 32 || wp == 127) return 0;
             if (g_focus != FLD_NONE) FieldChar((wchar_t)wp);
-            else if (g_hasDoc && wp >= L'0' && wp <= L'9') {
+            else if (g_hasDoc && !g_present && wp >= L'0' && wp <= L'9') {
                 FocusField(FLD_PAGE);
                 g_pageText = std::wstring(1, (wchar_t)wp);
                 g_selAll = false;
@@ -3260,6 +4291,16 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                     Invalidate();
                     break;
                 }
+                case TIMER_CURSOR:
+                    KillTimer(h, TIMER_CURSOR);
+                    if (g_present && !g_drawing && !g_erasing && !g_cursorHidden) {
+                        g_cursorHidden = true;
+                        POINT cp;
+                        GetCursorPos(&cp);
+                        if (WindowFromPoint(cp) == h && !g_inkMode) SetCursor(nullptr);
+                        Invalidate();
+                    }
+                    break;
                 case TIMER_CARET:
                     if (g_focus == FLD_NONE) KillTimer(h, TIMER_CARET);
                     g_caretOn = !g_caretOn;
@@ -3269,7 +4310,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_APP_RENDERED: {
             RenderResult* r = (RenderResult*)lp;
-            if (r->gen == g_docGen && g_hasDoc && r->page < N() && r->color == S.pageColor) {
+            if (r->gen == g_docGen && g_hasDoc && r->page < N() && r->color == S.pageColor && r->ver == g_pages[r->page].ver) {
                 PageInfo& p = g_pages[r->page];
                 if (r->hasLinks && !p.linksLoaded) {
                     p.links = std::move(r->links);
@@ -3350,6 +4391,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_CLOSE:
+            if (!ConfirmDiscard()) return 0;
+            if (g_present) SetPresentation(false);
             SavePlacement();
             DestroyWindow(h);
             return 0;
@@ -3426,6 +4469,18 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, PWSTR, int show) {
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"FlinkPDF", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, w, hgt,
                                 nullptr, nullptr, hi, nullptr);
     if (!hwnd) return 1;
+    if (HMODULE u = GetModuleHandleW(L"user32.dll")) {  // dynamisch: läuft so auch auf Systemen ohne Pointer-API
+        pGetPointerType = (decltype(pGetPointerType))(void*)GetProcAddress(u, "GetPointerType");
+        pGetPointerPenInfo = (decltype(pGetPointerPenInfo))(void*)GetProcAddress(u, "GetPointerPenInfo");
+        pGetPointerPenInfoHistory = (decltype(pGetPointerPenInfoHistory))(void*)GetProcAddress(u, "GetPointerPenInfoHistory");
+        auto setFb = (BOOL(WINAPI*)(HWND, FEEDBACK_TYPE, DWORD, UINT32, const void*))(void*)GetProcAddress(u, "SetWindowFeedbackSetting");
+        if (setFb) {  // keine Windows-Kringel bei Seitentaste/Gedrückthalten – die Tasten werden selbst ausgewertet
+            BOOL off = FALSE;
+            setFb(hwnd, FEEDBACK_PEN_BARRELVISUALIZATION, 0, sizeof off, &off);
+            setFb(hwnd, FEEDBACK_PEN_PRESSANDHOLD, 0, sizeof off, &off);
+            setFb(hwnd, FEEDBACK_PEN_RIGHTTAP, 0, sizeof off, &off);
+        }
+    }
 
     // Fensterposition wiederherstellen
     WINDOWPLACEMENT wp{};
